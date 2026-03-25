@@ -16,7 +16,14 @@ app.use(compression());
 // Allow frontend origin(s): set FRONTEND_URL in .env (comma-separated)
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map((o) => o.trim()).filter(Boolean)
-  : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:5176'];
+  : [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'http://localhost:5176',
+    'https://valleycroft.vercel.app',
+  ];
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true); // same-origin or non-browser
