@@ -13,9 +13,9 @@ const router = express.Router();
 
 router.use(protect);
 
-router.get('/', authorize('admin', 'ceo'), list);
-router.get('/availability', authorize('admin', 'ceo'), getAvailability);
-router.get('/:id', authorize('admin', 'ceo'), getOne);
+router.get('/', authorize('admin', 'ceo', 'finance'), list);
+router.get('/availability', authorize('admin', 'ceo', 'finance'), getAvailability);
+router.get('/:id', authorize('admin', 'ceo', 'finance'), getOne);
 router.post('/', authorize('admin'), create);
 router.put('/:id', authorize('admin'), update);
 router.delete('/:id', authorize('admin'), remove);

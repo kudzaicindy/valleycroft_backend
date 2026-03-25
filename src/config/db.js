@@ -2,8 +2,18 @@ const mongoose = require('mongoose');
 const Account = require('../models/Account');
 
 const connectDB = async () => {
+  const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+  if (!uri || typeof uri !== 'string' || !uri.trim()) {
+    console.error(
+      'Missing MongoDB connection string. Set MONGO_URI in a .env file in the project root ' +
+        '(see .env.example). Example local value:\n' +
+        '  MONGO_URI=mongodb://127.0.0.1:27017/valleyroad'
+    );
+    process.exit(1);
+  }
+
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
+    const conn = await mongoose.connect(uri.trim());
     console.log(`MongoDB Connected: ${conn.connection.host}`);
 
     Account.countDocuments()

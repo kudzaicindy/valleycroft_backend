@@ -13,8 +13,8 @@ const router = express.Router();
 router.post('/', createGuestBooking);
 router.get('/track', trackBooking);
 
-// Admin, CEO
-router.get('/', protect, authorize('admin', 'ceo'), getAllGuestBookings);
+// Admin, CEO, Finance (read)
+router.get('/', protect, authorize('admin', 'ceo', 'finance'), getAllGuestBookings);
 router.put('/:id', protect, authorize('admin'), updateGuestBooking);
 
 module.exports = router;

@@ -1,5 +1,26 @@
 const mongoose = require('mongoose');
 
+const transactionLineSchema = new mongoose.Schema(
+  {
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', required: true },
+    accountCode: { type: String, trim: true },
+    accountName: { type: String, trim: true },
+    debit: { type: Number, default: 0, min: 0 },
+    credit: { type: Number, default: 0, min: 0 },
+    description: String,
+  },
+  { _id: true }
+);
+
+transactionLineSchema.pre('validate', function (next) {
+  const d = Number(this.debit) || 0;
+  const c = Number(this.credit) || 0;
+  if (d > 0 && c > 0) {
+    return next(new Error('A transaction line cannot have both debit and credit'));
+  }
+  next();
+});
+
 const transactionSchema = new mongoose.Schema({
   type: { type: String, enum: ['income', 'expense'], required: true },
   category: String, // booking|salary|supplies|utilities|refund|supplier
@@ -26,6 +47,8 @@ const transactionSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   /** Posted double-entry journal (see /api/accounting); voided when transaction is updated/deleted */
   journalEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry' },
+  /** Snapshot of GL lines at post time (same economic meaning as linked journal entry). */
+  lines: { type: [transactionLineSchema], default: [] },
 }, { timestamps: true });
 
 transactionSchema.index({ date: -1 });

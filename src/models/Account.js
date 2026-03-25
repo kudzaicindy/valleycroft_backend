@@ -51,6 +51,17 @@ const accountSchema = new mongoose.Schema(
       unique: true,
       sparse: true,
     },
+    /**
+     * Opening balance on the account's **normal** side (positive = natural increase).
+     * DEBIT-normal (e.g. assets): positive = debit balance brought forward.
+     * CREDIT-normal (e.g. liabilities, equity): positive = credit balance brought forward.
+     * Combined with posted journals in trial balance, balance sheet, and getAccountBalance.
+     * Do not duplicate the same amount as a separate opening journal unless you clear this to 0.
+     */
+    openingBalance: { type: Number, default: 0 },
+    /** Optional: as-of date you mean for opening figures (informational). */
+    openingBalanceAsOf: { type: Date },
+    openingBalanceNote: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

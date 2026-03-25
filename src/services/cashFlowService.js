@@ -1,6 +1,7 @@
 const { round2 } = require('../utils/math');
 const incomeStatementService = require('./incomeStatementService');
 const JournalEntry = require('../models/JournalEntry');
+const Account = require('../models/Account');
 
 class CashFlowService {
   async generate(startDate, endDate) {
@@ -275,8 +276,14 @@ class CashFlowService {
       },
     ]);
 
-    if (!r.length) return 0;
-    return round2((r[0].debits || 0) - (r[0].credits || 0));
+    let journalCash = 0;
+    if (r.length) journalCash = round2((r[0].debits || 0) - (r[0].credits || 0));
+
+    const cashAccs = await Account.find({ code: { $in: ['1001', '1002'] } })
+      .select('openingBalance')
+      .lean();
+    const openingCash = cashAccs.reduce((s, row) => s + (Number(row.openingBalance) || 0), 0);
+    return round2(journalCash + openingCash);
   }
 }
 

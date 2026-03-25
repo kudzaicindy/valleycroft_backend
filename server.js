@@ -27,6 +27,10 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
+// Ensure CORS preflight requests don't fall through to a 404.
+// Express otherwise returns 404 for OPTIONS when there is no explicit handler for that path.
+app.options('*', (req, res) => res.sendStatus(204));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

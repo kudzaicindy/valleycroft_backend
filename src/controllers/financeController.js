@@ -4,12 +4,40 @@ const Salary = require('../models/Salary');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const transactionJournalService = require('../services/transactionJournalService');
+const { attachLedgerEntriesToTransactions } = require('../services/transactionLedgerLinesService');
 const { withRoomPreview } = require('../utils/bookingPreview');
 
 /** In-memory idempotency for POST /transactions (duplicate submits / Strict Mode) */
 const IDEMPOTENCY_WINDOW_MS = 10 * 60 * 1000;
 const idempotencyCache = new Map();
 const IDEMPOTENCY_MAX = 500;
+
+/** Same-payload duplicate POSTs within this window collapse to one row (double-click, Strict Mode, etc.) */
+const DUPLICATE_BODY_WINDOW_MS = 20 * 1000;
+/** One in-flight create per normalized body fingerprint (parallel duplicate requests share one Promise) */
+const inFlightTransactionByFingerprint = new Map();
+
+function normalizeManualTransactionBody(body) {
+  const d = body.date ? new Date(body.date) : new Date();
+  return {
+    type: body.type,
+    category: String(body.category || '').trim(),
+    description: String(body.description || '').trim(),
+    amount: Number(body.amount),
+    dateKey: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
+  };
+}
+
+function withTransactionDedupeLock(fingerprint, fn) {
+  if (inFlightTransactionByFingerprint.has(fingerprint)) {
+    return inFlightTransactionByFingerprint.get(fingerprint);
+  }
+  const p = fn().finally(() => {
+    inFlightTransactionByFingerprint.delete(fingerprint);
+  });
+  inFlightTransactionByFingerprint.set(fingerprint, p);
+  return p;
+}
 
 function idempotencyFingerprint(userId, clientKey, payload) {
   return crypto
@@ -97,12 +125,18 @@ async function leanTransactionWithBookingPreview(txId) {
     .lean();
   if (doc?.booking) doc.booking = withRoomPreview(doc.booking);
   if (doc?.guestBooking) doc.guestBooking = withRoomPreview(doc.guestBooking);
-  return doc ? addDrCr(doc) : doc;
+  const withDrCr = doc ? addDrCr(doc) : doc;
+  if (!withDrCr) return withDrCr;
+  const [withLedger] = await attachLedgerEntriesToTransactions([withDrCr]);
+  return withLedger;
 }
 
 const getTransactions = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
   const { skip, limit: lim } = getPagination(page, limit);
+  const includeLedger =
+    String(req.query.includeLedger ?? '1').toLowerCase() !== '0' &&
+    String(req.query.includeLedger ?? '').toLowerCase() !== 'false';
   const collapseDupes = !(
     String(req.query.collapseDuplicates || '').toLowerCase() === '0' ||
     String(req.query.collapseDuplicates || '').toLowerCase() === 'false'
@@ -147,9 +181,12 @@ const getTransactions = asyncHandler(async (req, res) => {
   totals.net = Number((totals.credit - totals.debit).toFixed(2));
   totals.debit = Number(totals.debit.toFixed(2));
   totals.credit = Number(totals.credit.toFixed(2));
+  const listPayload = includeLedger
+    ? await attachLedgerEntriesToTransactions(withBalances)
+    : withBalances.map((tx) => ({ ...tx, ledgerEntry: null }));
   res.json({
     success: true,
-    data: withBalances,
+    data: listPayload,
     meta: {
       page: parseInt(page, 10),
       limit: lim,
@@ -157,6 +194,7 @@ const getTransactions = asyncHandler(async (req, res) => {
       totals,
       duplicateRowsCollapsed,
       collapseDuplicates: collapseDupes,
+      includeLedger,
     },
   });
 });
@@ -164,6 +202,7 @@ const getTransactions = asyncHandler(async (req, res) => {
 const createTransaction = asyncHandler(async (req, res) => {
   const {
     journalEntryId: _ignoreJournal,
+    lines: _ignoreLines,
     guestBooking: _ignoreGuestBooking,
     source: _ignoreSource,
     revenueRecognition: _ignoreRevRec,
@@ -186,40 +225,92 @@ const createTransaction = asyncHandler(async (req, res) => {
     }
   }
 
-  const tx = await Transaction.create({
-    ...bodySafe,
-    createdBy: req.user._id,
-    source: 'manual',
-    revenueRecognition: 'cash',
+  const bodyFp = idempotencyFingerprint(
+    req.user._id,
+    '__manual_tx_body__',
+    normalizeManualTransactionBody(bodySafe)
+  );
+
+  const outcome = await withTransactionDedupeLock(bodyFp, async () => {
+    const norm = normalizeManualTransactionBody(bodySafe);
+    const windowStart = new Date(Date.now() - DUPLICATE_BODY_WINDOW_MS);
+    const d = bodySafe.date ? new Date(bodySafe.date) : new Date();
+    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const dayEnd = new Date(dayStart);
+    dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+
+    const existing = await Transaction.findOne({
+      createdBy: req.user._id,
+      source: 'manual',
+      revenueRecognition: 'cash',
+      type: norm.type,
+      category: norm.category,
+      description: norm.description,
+      amount: norm.amount,
+      date: { $gte: dayStart, $lt: dayEnd },
+      createdAt: { $gte: windowStart },
+    })
+      .sort({ createdAt: -1 })
+      .exec();
+
+    if (existing) {
+      return { kind: 'ok', tx: existing, created: false };
+    }
+
+    const tx = await Transaction.create({
+      ...bodySafe,
+      createdBy: req.user._id,
+      source: 'manual',
+      revenueRecognition: 'cash',
+    });
+    try {
+      const { entryId, lines } = await transactionJournalService.postJournalForTransaction(
+        tx,
+        req.user._id
+      );
+      tx.journalEntryId = entryId;
+      tx.lines = lines;
+      await tx.save();
+    } catch (err) {
+      await Transaction.findByIdAndDelete(tx._id);
+      return {
+        kind: 'ledger_error',
+        message: err.message || 'Could not post ledger entry',
+        hint: 'Ensure chart of accounts is seeded: npm run seed:accounting',
+      };
+    }
+    await logAudit({
+      userId: req.user._id,
+      role: req.user.role,
+      action: 'create',
+      entity: 'Transaction',
+      entityId: tx._id,
+      after: tx.toObject(),
+      req,
+    });
+    return { kind: 'ok', tx, created: true };
   });
-  try {
-    const entryId = await transactionJournalService.postJournalForTransaction(tx, req.user._id);
-    tx.journalEntryId = entryId;
-    await tx.save();
-  } catch (err) {
-    await Transaction.findByIdAndDelete(tx._id);
+
+  if (outcome.kind === 'ledger_error') {
     return res.status(400).json({
       success: false,
-      message: err.message || 'Could not post ledger entry',
-      hint: 'Ensure chart of accounts is seeded: npm run seed:accounting',
+      message: outcome.message,
+      hint: outcome.hint,
     });
   }
-  await logAudit({
-    userId: req.user._id,
-    role: req.user.role,
-    action: 'create',
-    entity: 'Transaction',
-    entityId: tx._id,
-    after: tx.toObject(),
-    req,
-  });
+
+  const { tx, created } = outcome;
   const data = await leanTransactionWithBookingPreview(tx._id);
 
   if (clientIdem != null && String(clientIdem).trim()) {
     idempotencyRemember(idempotencyFingerprint(req.user._id, String(clientIdem).trim(), bodySafe), tx._id);
   }
 
-  res.status(201).json({ success: true, data });
+  res.status(201).json({
+    success: true,
+    data,
+    ...(created ? {} : { idempotentReplay: true, duplicateSuppressed: true }),
+  });
 });
 
 const updateTransaction = asyncHandler(async (req, res) => {
@@ -236,9 +327,11 @@ const updateTransaction = asyncHandler(async (req, res) => {
       );
       voidedOld = true;
       tx.journalEntryId = undefined;
+      tx.lines = [];
     }
     const {
       journalEntryId: _ignore,
+      lines: _ignoreLines,
       guestBooking: _ig1,
       source: _ig2,
       revenueRecognition: _ig3,
@@ -247,9 +340,14 @@ const updateTransaction = asyncHandler(async (req, res) => {
     } = req.body;
     Object.assign(tx, bodySafe);
     tx.journalEntryId = undefined;
+    tx.lines = [];
     await tx.save();
-    const entryId = await transactionJournalService.postJournalForTransaction(tx, req.user._id);
+    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(
+      tx,
+      req.user._id
+    );
     tx.journalEntryId = entryId;
+    tx.lines = lines;
     await tx.save();
   } catch (err) {
     if (voidedOld) {
@@ -264,10 +362,8 @@ const updateTransaction = asyncHandler(async (req, res) => {
           revenueRecognition: before.revenueRecognition,
           receivableAccountCode: before.receivableAccountCode,
         };
-        const recoveryEntryId = await transactionJournalService.postJournalForTransaction(
-          recovery,
-          req.user._id
-        );
+        const { entryId: recoveryEntryId, lines: recoveryLines } =
+          await transactionJournalService.postJournalForTransaction(recovery, req.user._id);
         await Transaction.findByIdAndUpdate(tx._id, {
           type: before.type,
           category: before.category,
@@ -281,6 +377,7 @@ const updateTransaction = asyncHandler(async (req, res) => {
           revenueRecognition: before.revenueRecognition,
           receivableAccountCode: before.receivableAccountCode,
           journalEntryId: recoveryEntryId,
+          lines: recoveryLines,
         });
       } catch (rollbackErr) {
         console.error('Transaction ledger rollback failed:', rollbackErr.message);
@@ -360,7 +457,17 @@ const getIncomeStatement = asyncHandler(async (req, res) => {
     { $match: { type: 'expense', date: { $gte: startDate, $lte: endDate } } },
     { $group: { _id: '$category', total: { $sum: '$amount' } } },
   ]);
-  res.json({ success: true, data: { income, expense } });
+  const refundTotal = expense.find((r) => r._id === 'refund')?.total ?? 0;
+  const grossRevenue = income.reduce((s, r) => s + (r.total || 0), 0);
+  res.json({
+    success: true,
+    data: {
+      income,
+      expense,
+      refunds: refundTotal,
+      revenue: { gross: grossRevenue, refunds: refundTotal, net: grossRevenue - refundTotal },
+    },
+  });
 });
 
 const getBalanceSheet = asyncHandler(async (req, res) => {
@@ -378,16 +485,39 @@ const getPL = asyncHandler(async (req, res) => {
     { $match: { type: 'income', date: { $gte: startDate, $lte: endDate } } },
     { $group: { _id: null, total: { $sum: '$amount' } } },
   ]);
-  const [expense] = await Transaction.aggregate([
-    { $match: { type: 'expense', date: { $gte: startDate, $lte: endDate } } },
+  const [refundsAgg] = await Transaction.aggregate([
+    {
+      $match: {
+        type: 'expense',
+        category: 'refund',
+        date: { $gte: startDate, $lte: endDate },
+      },
+    },
     { $group: { _id: null, total: { $sum: '$amount' } } },
   ]);
+  const [expenseExRefunds] = await Transaction.aggregate([
+    {
+      $match: {
+        type: 'expense',
+        category: { $ne: 'refund' },
+        date: { $gte: startDate, $lte: endDate },
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const grossIncome = income?.total ?? 0;
+  const refunds = refundsAgg?.total ?? 0;
+  const expenseOps = expenseExRefunds?.total ?? 0;
+  const netRevenue = grossIncome - refunds;
   res.json({
     success: true,
     data: {
-      income: income?.total ?? 0,
-      expense: expense?.total ?? 0,
-      profit: (income?.total ?? 0) - (expense?.total ?? 0),
+      income: grossIncome,
+      refunds,
+      netRevenue,
+      expense: expenseOps,
+      expenseIncludingRefunds: expenseOps + refunds,
+      profit: netRevenue - expenseOps,
     },
   });
 });

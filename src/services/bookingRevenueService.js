@@ -5,8 +5,20 @@
  */
 const Debtor = require('../models/Debtor');
 const Transaction = require('../models/Transaction');
+const Invoice = require('../models/Invoice');
 const transactionJournalService = require('./transactionJournalService');
 const guestReceivableAccountService = require('./guestReceivableAccountService');
+const bookingInvoiceService = require('./bookingInvoiceService');
+const { scheduleInvoiceDelivery } = require('./invoiceNotifyService');
+
+async function voidInvoiceLinkedToBooking(bookingDoc) {
+  let invId = bookingDoc.invoiceId;
+  if (!invId && bookingDoc.debtorId) {
+    const d = await Debtor.findById(bookingDoc.debtorId).select('invoiceRef').lean();
+    invId = d?.invoiceRef;
+  }
+  if (invId) await Invoice.findByIdAndUpdate(invId, { status: 'void' });
+}
 
 function debtorStatusFor(amountOwed, amountPaid) {
   const owed = Number(amountOwed) || 0;
@@ -59,9 +71,20 @@ async function onGuestBookingConfirmed(gb, userId) {
   });
 
   try {
-    const entryId = await transactionJournalService.postJournalForTransaction(tx, userId);
+    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(tx, userId);
     tx.journalEntryId = entryId;
+    tx.lines = lines;
     await tx.save();
+  } catch (err) {
+    await Transaction.findByIdAndDelete(tx._id);
+    await Debtor.findByIdAndDelete(debtor._id);
+    await guestReceivableAccountService.deactivateForGuestBooking(gb);
+    throw err;
+  }
+
+  let invoice;
+  try {
+    invoice = await bookingInvoiceService.createInvoiceForConfirmedGuestBooking(gb, debtor, userId);
   } catch (err) {
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
@@ -71,9 +94,27 @@ async function onGuestBookingConfirmed(gb, userId) {
 
   gb.debtorId = debtor._id;
   gb.revenueTransactionId = tx._id;
+  gb.invoiceId = invoice._id;
   await gb.save();
 
-  return { debtorId: debtor._id, transactionId: tx._id, journalEntryId: tx.journalEntryId };
+  scheduleInvoiceDelivery({
+    guestName: gb.guestName,
+    email: gb.guestEmail,
+    phone: gb.guestPhone,
+    invoiceNumber: invoice.invoiceNumber,
+    total: invoice.total,
+    notes: invoice.notes,
+    dueDate: invoice.dueDate,
+    lineItems: invoice.lineItems,
+    trackingCode: gb.trackingCode,
+  });
+
+  return {
+    debtorId: debtor._id,
+    transactionId: tx._id,
+    journalEntryId: tx.journalEntryId,
+    invoiceId: invoice._id,
+  };
 }
 
 /**
@@ -119,9 +160,20 @@ async function onInternalBookingConfirmed(b, userId) {
   });
 
   try {
-    const entryId = await transactionJournalService.postJournalForTransaction(tx, userId);
+    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(tx, userId);
     tx.journalEntryId = entryId;
+    tx.lines = lines;
     await tx.save();
+  } catch (err) {
+    await Transaction.findByIdAndDelete(tx._id);
+    await Debtor.findByIdAndDelete(debtor._id);
+    await guestReceivableAccountService.deactivateForInternalBooking(b);
+    throw err;
+  }
+
+  let invoice;
+  try {
+    invoice = await bookingInvoiceService.createInvoiceForConfirmedInternalBooking(b, debtor, userId);
   } catch (err) {
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
@@ -131,17 +183,37 @@ async function onInternalBookingConfirmed(b, userId) {
 
   b.debtorId = debtor._id;
   b.revenueTransactionId = tx._id;
+  b.invoiceId = invoice._id;
   await b.save();
 
-  return { debtorId: debtor._id, transactionId: tx._id, journalEntryId: tx.journalEntryId };
+  scheduleInvoiceDelivery({
+    guestName: b.guestName,
+    email: b.guestEmail,
+    phone: b.guestPhone,
+    invoiceNumber: invoice.invoiceNumber,
+    total: invoice.total,
+    notes: invoice.notes,
+    dueDate: invoice.dueDate,
+    lineItems: invoice.lineItems,
+    trackingCode: undefined,
+  });
+
+  return {
+    debtorId: debtor._id,
+    transactionId: tx._id,
+    journalEntryId: tx.journalEntryId,
+    invoiceId: invoice._id,
+  };
 }
 
 async function reverseGuestBookingRevenue(gb, userId) {
   if (!gb.revenueTransactionId) return { skipped: true };
   const tx = await Transaction.findById(gb.revenueTransactionId);
   if (!tx) {
+    await voidInvoiceLinkedToBooking(gb);
     gb.revenueTransactionId = undefined;
     gb.debtorId = undefined;
+    gb.invoiceId = undefined;
     await guestReceivableAccountService.deactivateForGuestBooking(gb, { skipSave: true });
     await gb.save();
     return { skipped: true };
@@ -149,6 +221,7 @@ async function reverseGuestBookingRevenue(gb, userId) {
   if (tx.journalEntryId) {
     await transactionJournalService.voidJournalLinkedToTransaction(tx, userId, 'Guest booking cancelled');
   }
+  await voidInvoiceLinkedToBooking(gb);
   await tx.deleteOne();
   if (gb.debtorId) {
     await Debtor.findByIdAndUpdate(gb.debtorId, {
@@ -160,6 +233,7 @@ async function reverseGuestBookingRevenue(gb, userId) {
   }
   gb.revenueTransactionId = undefined;
   gb.debtorId = undefined;
+  gb.invoiceId = undefined;
   await guestReceivableAccountService.deactivateForGuestBooking(gb, { skipSave: true });
   await gb.save();
   return { reversed: true };
@@ -169,8 +243,10 @@ async function reverseInternalBookingRevenue(b, userId) {
   if (!b.revenueTransactionId) return { skipped: true };
   const tx = await Transaction.findById(b.revenueTransactionId);
   if (!tx) {
+    await voidInvoiceLinkedToBooking(b);
     b.revenueTransactionId = undefined;
     b.debtorId = undefined;
+    b.invoiceId = undefined;
     await guestReceivableAccountService.deactivateForInternalBooking(b, { skipSave: true });
     await b.save();
     return { skipped: true };
@@ -178,6 +254,7 @@ async function reverseInternalBookingRevenue(b, userId) {
   if (tx.journalEntryId) {
     await transactionJournalService.voidJournalLinkedToTransaction(tx, userId, 'Booking cancelled');
   }
+  await voidInvoiceLinkedToBooking(b);
   await tx.deleteOne();
   if (b.debtorId) {
     await Debtor.findByIdAndUpdate(b.debtorId, {
@@ -189,6 +266,7 @@ async function reverseInternalBookingRevenue(b, userId) {
   }
   b.revenueTransactionId = undefined;
   b.debtorId = undefined;
+  b.invoiceId = undefined;
   await guestReceivableAccountService.deactivateForInternalBooking(b, { skipSave: true });
   await b.save();
   return { reversed: true };

@@ -134,7 +134,11 @@ exports.getIncomeStatement = async (req, res) => {
 
     const buildStatement = async (s, e) => {
       const revCats = await sumByCategory('income', ['booking', 'event', 'other'], s, e);
-      const revTotal = Object.values(revCats).reduce((a, b) => a + b, 0);
+      const revGross = Object.values(revCats).reduce((a, b) => a + b, 0);
+      // Cash refunds to customers (Transaction type expense, category refund) — contra-revenue, same as GL Dr 4001
+      const refundCats = await sumByCategory('expense', ['refund'], s, e);
+      const refunds = refundCats.refund || 0;
+      const revTotal = revGross - refunds;
 
       const cogsCats = await sumByCategory('expense', ['salary', 'supplies', 'utilities', 'maintenance'], s, e);
       const cogsTotal = Object.values(cogsCats).reduce((a, b) => a + b, 0);
@@ -154,6 +158,8 @@ exports.getIncomeStatement = async (req, res) => {
           booking: revCats.booking || 0,
           eventHire: revCats.event || 0,
           other: revCats.other || 0,
+          gross: revGross,
+          refunds,
           total: revTotal,
         },
         cogs: {
@@ -379,6 +385,11 @@ exports.getCashFlow = async (req, res) => {
     const closingCash = openingCash + netChange;
     const periodLabel = req.query.year || req.query.month || `${start.toISOString().slice(0, 10)}..${end.toISOString().slice(0, 10)}`;
 
+    const refundOutflow = expenseCats
+      .filter((r) => r._id === 'refund')
+      .reduce((s, r) => s + (Number(r.total) || 0), 0);
+    const otherExpenseOutflow = Number((cashOut - refundOutflow).toFixed(2));
+
     const monthNames = [
       'january', 'february', 'march', 'april', 'may', 'june',
       'july', 'august', 'september', 'october', 'november', 'december',
@@ -423,6 +434,34 @@ exports.getCashFlow = async (req, res) => {
       },
     };
 
+    const mapIncomeRow = (r) => ({
+      category: r._id || 'uncategorized',
+      total: Number(Number(r.total).toFixed(2)),
+      transaction_count: r.count || 0,
+    });
+    const mapExpenseRow = (r) => ({
+      category: r._id || 'uncategorized',
+      total: Number(Number(r.total).toFixed(2)),
+      transaction_count: r.count || 0,
+    });
+
+    const cashInflowBlock = {
+      total: Number(cashIn.toFixed(2)),
+      basis: 'Sum of all Transaction documents with type=income in the period.',
+      categories: incomeCats.map(mapIncomeRow),
+    };
+
+    const cashOutflowBlock = {
+      total: Number(cashOut.toFixed(2)),
+      basis: 'Sum of all Transaction documents with type=expense in the period.',
+      categories: expenseCats.map(mapExpenseRow),
+      subtotals: {
+        refunds_to_customers: Number(refundOutflow.toFixed(2)),
+        other_operating_cash_payments: otherExpenseOutflow,
+        paid_to_suppliers: 0,
+      },
+    };
+
     await logAudit({ userId: req.user._id, role: req.user.role, action: 'export', entity: 'CashFlow', req });
 
     res.json({
@@ -436,11 +475,12 @@ exports.getCashFlow = async (req, res) => {
           ending_cash: Number(closingCash.toFixed(2)),
           net_change_in_cash: Number(netChange.toFixed(2)),
         },
+        cash_inflow: cashInflowBlock,
+        cash_outflow: cashOutflowBlock,
         cash_balance_by_account: cashBalanceByAccount,
         operating_activities: {
-          cash_received_from_customers: Number(cashIn.toFixed(2)),
-          cash_paid_to_suppliers: 0,
-          cash_paid_for_expenses: Number(cashOut.toFixed(2)),
+          description:
+            'Net operating cash = data.cash_inflow.total − data.cash_outflow.total (all Transaction rows, cash basis).',
           net_cash_from_operating_activities: Number(netChange.toFixed(2)),
         },
         investing_activities: {
@@ -452,22 +492,15 @@ exports.getCashFlow = async (req, res) => {
           owners_contribution: 0,
           loan_proceeds: 0,
         },
-        byCategory: {
-          cashIn: incomeCats.map((r) => ({ category: r._id || 'uncategorized', total: r.total })),
-          cashOut: expenseCats.map((r) => ({ category: r._id || 'uncategorized', total: r.total })),
-        },
         detailed_breakdown: {
-          income: { total: Number(cashIn.toFixed(2)), categories: incomeCats },
-          expenses: { total_count: expenseCats.reduce((s, x) => s + (x.count || 0), 0), total_amount: Number(cashOut.toFixed(2)), categories: expenseCats },
           transactions: txList,
         },
         monthly_breakdown: monthlyBreakdown,
         yearly_totals: {
           operating_activities: {
-            inflows: Number(cashIn.toFixed(2)),
-            outflows: Number(cashOut.toFixed(2)),
+            cash_inflow_total: Number(cashIn.toFixed(2)),
+            cash_outflow_total: Number(cashOut.toFixed(2)),
             net: Number(netChange.toFixed(2)),
-            breakdown: {},
           },
         },
         summary: {
@@ -488,21 +521,18 @@ exports.getCashFlow = async (req, res) => {
             net_change_in_cash: { label: 'NET CHANGE IN CASH', value: Number(netChange.toFixed(2)) },
           },
         },
-        tabular_monthly_breakdown: monthlyBreakdown,
         cash_accounts: {
           total: Number(closingCash.toFixed(2)),
           breakdown: cashBalanceByAccount,
           closing_balance: Number(closingCash.toFixed(2)),
         },
-        openingCash: Number(openingCash.toFixed(2)),
-        cashIn: Number(cashIn.toFixed(2)),
-        cashOut: Number(cashOut.toFixed(2)),
-        netChange: Number(netChange.toFixed(2)),
-        closingCash: Number(closingCash.toFixed(2)),
         metadata: {
           generated_at: new Date().toISOString(),
           residence_filter: null,
           transaction_count: txCount || 0,
+          opening_cash: Number(openingCash.toFixed(2)),
+          closing_cash: Number(closingCash.toFixed(2)),
+          net_change_in_cash: Number(netChange.toFixed(2)),
         },
         transaction_details: { transaction_count: txCount || 0 },
       },
@@ -560,6 +590,13 @@ exports.getPL = async (req, res) => {
       return a;
     }, {});
 
+    const refundContra = costsMap.refund || 0;
+    const totalRevenueGross = revenueByCategory.reduce((a, r) => a + r.revenue, 0);
+    const totalRevenue = totalRevenueGross - refundContra;
+    const totalCosts = Object.entries(costsMap)
+      .filter(([cat]) => cat !== 'refund')
+      .reduce((a, [, v]) => a + v, 0);
+
     const incomeCatIds = new Set(revenueByCategory.map((r) => r._id).filter((id) => id != null));
     const byCategoryFromRevenue = revenueByCategory.map((r) => {
       const costs = costsMap[r._id] || 0;
@@ -572,9 +609,22 @@ exports.getPL = async (req, res) => {
         margin: r.revenue ? +((profit / r.revenue) * 100).toFixed(1) : 0,
       };
     });
-    // Expense-only categories (e.g. supplies, utilities) never appeared here — only in totals
+    const refundRow =
+      refundContra > 0
+        ? [
+            {
+              category: 'refund',
+              revenue: -refundContra,
+              costs: 0,
+              profit: -refundContra,
+              margin: totalRevenueGross ? +((-refundContra / totalRevenueGross) * 100).toFixed(1) : 0,
+              note: 'contra-revenue (cash refunds to customers)',
+            },
+          ]
+        : [];
+    // Expense-only categories (e.g. supplies, utilities) — exclude refund (shown under revenue)
     const expenseOnlyRows = costsByCategory
-      .filter((c) => c._id != null && !incomeCatIds.has(c._id))
+      .filter((c) => c._id != null && c._id !== 'refund' && !incomeCatIds.has(c._id))
       .map((c) => ({
         category: c._id,
         revenue: 0,
@@ -582,10 +632,8 @@ exports.getPL = async (req, res) => {
         profit: -c.costs,
         margin: 0,
       }));
-    const byCategory = [...byCategoryFromRevenue, ...expenseOnlyRows];
+    const byCategory = [...byCategoryFromRevenue, ...refundRow, ...expenseOnlyRows];
 
-    const totalRevenue = revenueByCategory.reduce((a, r) => a + r.revenue, 0);
-    const totalCosts = Object.values(costsMap).reduce((a, v) => a + v, 0);
     const grossProfit = totalRevenue - totalCosts;
 
     const opexCategories = ['marketing', 'software', 'insurance', 'admin'];
@@ -598,6 +646,8 @@ exports.getPL = async (req, res) => {
       success: true,
       data: {
         summary: {
+          grossRevenue: totalRevenueGross,
+          refunds: refundContra,
           totalRevenue,
           totalCosts,
           grossProfit,

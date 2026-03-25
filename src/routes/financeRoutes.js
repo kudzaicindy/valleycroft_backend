@@ -2,11 +2,13 @@ const express = require('express');
 const { protect, authorize } = require('../middleware/auth');
 const financeController = require('../controllers/financeController');
 const financeStatements = require('../controllers/financeStatements');
+const financeDashboardController = require('../controllers/financeDashboardController');
 const { listLedgerAsTransactions } = require('../controllers/accountingLedgerController');
 
 const router = express.Router();
 router.use(protect);
 
+router.get('/dashboard', authorize('finance', 'admin', 'ceo'), financeDashboardController.getDashboard);
 router.get('/transactions', authorize('finance', 'admin', 'ceo'), financeController.getTransactions);
 router.get('/transactions-ledger-format', authorize('finance', 'admin', 'ceo'), listLedgerAsTransactions);
 router.post('/transactions', authorize('finance', 'admin'), financeController.createTransaction);

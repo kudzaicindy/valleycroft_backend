@@ -114,9 +114,11 @@ class LedgerService {
       },
     ]);
 
+    const acc = await Account.findById(accountId).lean();
+    if (!acc) return null;
+    const opening = Number(acc.openingBalance) || 0;
+
     if (!rows.length) {
-      const acc = await Account.findById(accountId).lean();
-      if (!acc) return null;
       return {
         code: acc.code,
         name: acc.name,
@@ -125,17 +127,17 @@ class LedgerService {
         normalBalance: acc.normalBalance,
         totalDebits: 0,
         totalCredits: 0,
-        balance: 0,
+        openingBalance: round2(opening),
+        balance: round2(opening),
       };
     }
 
     const r = rows[0];
-    const balance =
+    const journalBalance =
       r.normalBalance === 'DEBIT'
         ? r.totalDebits - r.totalCredits
         : r.totalCredits - r.totalDebits;
 
-    const acc = await Account.findById(accountId).lean();
     return {
       code: acc.code,
       name: acc.name,
@@ -144,7 +146,8 @@ class LedgerService {
       normalBalance: acc.normalBalance,
       totalDebits: round2(r.totalDebits),
       totalCredits: round2(r.totalCredits),
-      balance: round2(balance),
+      openingBalance: round2(opening),
+      balance: round2(journalBalance + opening),
     };
   }
 
@@ -176,35 +179,83 @@ class LedgerService {
           totalCredits: { $sum: '$lines.credit' },
         },
       },
-      { $sort: { code: 1 } },
     ]);
 
-    const accounts = rows.map((r) => {
-      const balance =
-        r.normalBalance === 'DEBIT'
-          ? r.totalDebits - r.totalCredits
-          : r.totalCredits - r.totalDebits;
-      return {
-        accountId: r._id,
-        code: r.code,
-        name: r.name,
-        type: r.type,
-        subType: r.subType,
-        normalBalance: r.normalBalance,
-        totalDebits: round2(r.totalDebits),
-        totalCredits: round2(r.totalCredits),
-        balance: round2(balance),
-      };
-    });
+    const journalById = Object.fromEntries(
+      rows.map((r) => [
+        String(r._id),
+        {
+          totalDebits: r.totalDebits,
+          totalCredits: r.totalCredits,
+          code: r.code,
+          name: r.name,
+          type: r.type,
+          subType: r.subType,
+          normalBalance: r.normalBalance,
+        },
+      ])
+    );
 
-    const totalDebits = accounts.reduce((s, r) => s + r.totalDebits, 0);
-    const totalCredits = accounts.reduce((s, r) => s + r.totalCredits, 0);
+    const allAccounts = await Account.find({ isActive: true }).sort({ code: 1 }).lean();
+    const accounts = [];
+
+    for (const acc of allAccounts) {
+      const jr = journalById[String(acc._id)];
+      const totalDebits = jr ? jr.totalDebits : 0;
+      const totalCredits = jr ? jr.totalCredits : 0;
+      const journalBalance =
+        acc.normalBalance === 'DEBIT'
+          ? totalDebits - totalCredits
+          : totalCredits - totalDebits;
+      const opening = Number(acc.openingBalance) || 0;
+      const balance = round2(journalBalance + opening);
+      const hasMovement =
+        Math.abs(totalDebits) > 0.005 || Math.abs(totalCredits) > 0.005;
+      if (!hasMovement && Math.abs(opening) < 0.005) continue;
+
+      accounts.push({
+        accountId: acc._id,
+        code: acc.code,
+        name: acc.name,
+        type: acc.type,
+        subType: acc.subType,
+        normalBalance: acc.normalBalance,
+        totalDebits: round2(totalDebits),
+        totalCredits: round2(totalCredits),
+        openingBalance: round2(opening),
+        balance,
+      });
+    }
+
+    const journalDebits = accounts.reduce((s, r) => s + r.totalDebits, 0);
+    const journalCredits = accounts.reduce((s, r) => s + r.totalCredits, 0);
+
+    let trialDebitColumn = 0;
+    let trialCreditColumn = 0;
+    for (const a of accounts) {
+      const b = a.balance;
+      if (a.normalBalance === 'DEBIT') {
+        if (b >= 0) trialDebitColumn += b;
+        else trialCreditColumn += -b;
+      } else if (b >= 0) trialCreditColumn += b;
+      else trialDebitColumn += -b;
+    }
+    trialDebitColumn = round2(trialDebitColumn);
+    trialCreditColumn = round2(trialCreditColumn);
 
     return {
       accounts,
-      totalDebits: round2(totalDebits),
-      totalCredits: round2(totalCredits),
-      isBalanced: Math.abs(totalDebits - totalCredits) < 0.01,
+      totals: {
+        journalMovementDebits: round2(journalDebits),
+        journalMovementCredits: round2(journalCredits),
+        journalMovementsMatch: Math.abs(journalDebits - journalCredits) < 0.01,
+        trialDebitColumn: trialDebitColumn,
+        trialCreditColumn,
+        trialBalanced: Math.abs(trialDebitColumn - trialCreditColumn) < 0.01,
+      },
+      totalDebits: round2(journalDebits),
+      totalCredits: round2(journalCredits),
+      isBalanced: Math.abs(trialDebitColumn - trialCreditColumn) < 0.01,
     };
   }
 

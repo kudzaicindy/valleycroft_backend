@@ -21,6 +21,7 @@ const bookingSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   revenueTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
   debtorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Debtor' },
+  invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   receivableAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account' },
 }, { timestamps: true });
 

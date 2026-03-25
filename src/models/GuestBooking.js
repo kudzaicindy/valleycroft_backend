@@ -16,6 +16,8 @@ const guestBookingSchema = new mongoose.Schema({
   /** Filled when status → confirmed: revenue transaction + debtor for statements */
   revenueTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
   debtorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Debtor' },
+  /** Guest invoice created on confirm */
+  invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
   /** Child GL A/R for this guest (code like 1010-{guestBookingId}) */
   receivableAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account' },
 }, { timestamps: true });

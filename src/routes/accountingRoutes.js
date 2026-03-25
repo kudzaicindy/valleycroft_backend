@@ -17,6 +17,7 @@ router.use(authorize('finance', 'admin', 'ceo'));
 router.get('/accounts/next-code', accountChartController.getNextAccountCode);
 router.get('/accounts', accountChartController.listAccounts);
 router.post('/accounts', accountChartController.createAccount);
+router.put('/accounts/:id', accountChartController.updateAccount);
 
 // POST /api/accounting/journal
 router.post('/journal', async (req, res) => {

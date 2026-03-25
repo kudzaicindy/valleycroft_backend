@@ -1,6 +1,7 @@
 const { round2 } = require('../utils/math');
 const incomeStatementService = require('./incomeStatementService');
 const JournalEntry = require('../models/JournalEntry');
+const Account = require('../models/Account');
 
 class BalanceSheetService {
   async generate(asOfDate, periodStartDate = null) {
@@ -188,13 +189,55 @@ class BalanceSheetService {
       },
     ]);
 
-    return grouped.map((r) => {
-      const balance =
-        r.normalBalance === 'DEBIT'
-          ? r.totalDebits - r.totalCredits
-          : r.totalCredits - r.totalDebits;
-      return { ...r, balance: round2(balance) };
-    });
+    const journalById = Object.fromEntries(
+      grouped.map((r) => [
+        String(r._id),
+        {
+          totalDebits: r.totalDebits,
+          totalCredits: r.totalCredits,
+          code: r.code,
+          name: r.name,
+          type: r.type,
+          subType: r.subType,
+          normalBalance: r.normalBalance,
+        },
+      ])
+    );
+
+    const bsAccounts = await Account.find({
+      type: { $in: ['ASSET', 'LIABILITY', 'EQUITY'] },
+      isActive: true,
+    })
+      .sort({ code: 1 })
+      .lean();
+
+    const out = [];
+    for (const acc of bsAccounts) {
+      const jr = journalById[String(acc._id)];
+      const totalDebits = jr ? jr.totalDebits : 0;
+      const totalCredits = jr ? jr.totalCredits : 0;
+      const journalBalance =
+        acc.normalBalance === 'DEBIT'
+          ? totalDebits - totalCredits
+          : totalCredits - totalDebits;
+      const opening = Number(acc.openingBalance) || 0;
+      const hasJr =
+        Math.abs(totalDebits) > 0.005 || Math.abs(totalCredits) > 0.005;
+      if (!hasJr && Math.abs(opening) < 0.005) continue;
+      out.push({
+        _id: acc._id,
+        code: acc.code,
+        name: acc.name,
+        type: acc.type,
+        subType: acc.subType,
+        normalBalance: acc.normalBalance,
+        totalDebits: round2(totalDebits),
+        totalCredits: round2(totalCredits),
+        openingBalance: round2(opening),
+        balance: round2(journalBalance + opening),
+      });
+    }
+    return out;
   }
 
   _groupBySubType(rows) {

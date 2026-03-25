@@ -2,6 +2,7 @@
  * Maps legacy Transaction (income/expense + category) to double-entry journal lines.
  * Cash side defaults to Bank (1002). Run `npm run seed:accounting` first.
  */
+const Account = require('../models/Account');
 const ledgerService = require('./ledgerService');
 
 const BANK = '1002';
@@ -62,21 +63,45 @@ function buildLines(tx) {
 }
 
 /**
+ * Resolve account codes to ids + names for embedding on Transaction.lines.
+ * @param {Array<{ accountCode: string, debit?: number, credit?: number, description?: string }>} lineSpecs
+ */
+async function resolveLinesFromSpecs(lineSpecs) {
+  const out = [];
+  for (const l of lineSpecs) {
+    const acc = await Account.findOne({ code: String(l.accountCode).trim() })
+      .select('code name')
+      .lean();
+    if (!acc) throw new Error(`Unknown account code: ${l.accountCode}`);
+    out.push({
+      accountId: acc._id,
+      accountCode: acc.code,
+      accountName: acc.name,
+      debit: Number(l.debit) || 0,
+      credit: Number(l.credit) || 0,
+      description: l.description || '',
+    });
+  }
+  return out;
+}
+
+/**
  * Post AUTO journal for a saved transaction document.
- * @returns {Promise<import('mongoose').Types.ObjectId>}
+ * @returns {Promise<{ entryId: import('mongoose').Types.ObjectId, lines: object[] }>}
  */
 async function postJournalForTransaction(tx, userId) {
-  const lines = buildLines(tx);
+  const lineSpecs = buildLines(tx);
   const entryDate = tx.date ? new Date(tx.date) : new Date();
+  const resolvedLines = await resolveLinesFromSpecs(lineSpecs);
   const { entryId } = await ledgerService.postEntry({
     entryDate,
     reference: `TX:${tx._id}`,
     description: `[AUTO] Transaction ${tx._id} — ${tx.type} / ${tx.category || 'general'}`,
     entryType: 'AUTO',
-    lines,
+    lines: lineSpecs,
     createdBy: userId,
   });
-  return entryId;
+  return { entryId, lines: resolvedLines };
 }
 
 async function voidJournalLinkedToTransaction(tx, userId, reason) {
@@ -86,6 +111,7 @@ async function voidJournalLinkedToTransaction(tx, userId, reason) {
 
 module.exports = {
   buildLines,
+  resolveLinesFromSpecs,
   postJournalForTransaction,
   voidJournalLinkedToTransaction,
   BANK,
