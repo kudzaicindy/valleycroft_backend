@@ -4,15 +4,19 @@ const { asyncHandler } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 
 const signToken = (user) =>
-  jwt.sign(
-    { _id: user._id, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-  );
+  jwt.sign({ _id: user._id, role: user.role }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  });
 
 // POST /login
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
+  if (!process.env.JWT_SECRET) {
+    return res.status(500).json({
+      success: false,
+      message: 'Server misconfiguration: JWT_SECRET is not set.',
+    });
+  }
   const user = await User.findOne({ email, isActive: true }).select('+password');
   if (!user || !(await user.matchPassword(password))) {
     return res.status(401).json({ success: false, message: 'Invalid email or password' });

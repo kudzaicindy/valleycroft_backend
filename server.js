@@ -63,6 +63,16 @@ app.use('/api/accounting', require('./src/routes/accountingRoutes'));
 // Health check — critical for Render keepalive
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+// Global error handler (helps Render return useful JSON for 500s)
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('API error:', err?.message || err);
+  res.status(500).json({
+    success: false,
+    message: err?.message || 'Internal Server Error',
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
