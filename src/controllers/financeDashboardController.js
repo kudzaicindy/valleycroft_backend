@@ -757,11 +757,25 @@ const getDashboard = asyncHandler(async (req, res) => {
     sumRefunds(monthStart, monthEnd),
     sumExpenseOps(monthStart, monthEnd),
     Transaction.aggregate([
-      { $match: { type: 'income', category: 'booking', date: { $gte: monthStart, $lte: monthEnd } } },
+      {
+        $match: {
+          type: 'income',
+          category: 'booking',
+          source: { $in: ['booking_confirm', 'guest_booking_confirm'] },
+          date: { $gte: monthStart, $lte: monthEnd },
+        },
+      },
       { $group: { _id: null, t: { $sum: '$amount' } } },
     ]),
     Transaction.aggregate([
-      { $match: { type: 'income', category: 'event', date: { $gte: monthStart, $lte: monthEnd } } },
+      {
+        $match: {
+          type: 'income',
+          category: 'event',
+          source: 'booking_confirm',
+          date: { $gte: monthStart, $lte: monthEnd },
+        },
+      },
       { $group: { _id: null, t: { $sum: '$amount' } } },
     ]),
     debtorAging(),

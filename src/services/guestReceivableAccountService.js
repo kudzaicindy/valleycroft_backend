@@ -7,6 +7,20 @@ const accountCodeService = require('./accountCodeService');
 const PARENT_AR_CODE = '1010';
 
 /**
+ * Control Accounts Receivable (1010) for v3 double-entry — one account per COA, not per booking.
+ * @returns {Promise<import('../models/Account')>}
+ */
+async function ensureControlAccountsReceivable(userId) {
+  const acc = await Account.findOne({ code: PARENT_AR_CODE, isActive: true });
+  if (!acc) {
+    throw new Error(
+      `Chart of accounts is missing account ${PARENT_AR_CODE} (Accounts Receivable). Seed the chart (e.g. npm run seed:accounting).`
+    );
+  }
+  return acc;
+}
+
+/**
  * @returns {Promise<import('../models/Account')>}
  */
 async function ensureForGuestBooking(gb, userId) {
@@ -80,7 +94,10 @@ async function ensureForInternalBooking(b, userId) {
 async function deactivateForGuestBooking(gb, options = {}) {
   const id = gb.receivableAccountId;
   if (!id) return;
-  await Account.findByIdAndUpdate(id, { isActive: false });
+  const acc = await Account.findById(id).select('code').lean();
+  if (acc && String(acc.code) !== PARENT_AR_CODE) {
+    await Account.findByIdAndUpdate(id, { isActive: false });
+  }
   gb.receivableAccountId = undefined;
   if (!options.skipSave) await gb.save();
 }
@@ -88,12 +105,16 @@ async function deactivateForGuestBooking(gb, options = {}) {
 async function deactivateForInternalBooking(b, options = {}) {
   const id = b.receivableAccountId;
   if (!id) return;
-  await Account.findByIdAndUpdate(id, { isActive: false });
+  const acc = await Account.findById(id).select('code').lean();
+  if (acc && String(acc.code) !== PARENT_AR_CODE) {
+    await Account.findByIdAndUpdate(id, { isActive: false });
+  }
   b.receivableAccountId = undefined;
   if (!options.skipSave) await b.save();
 }
 
 module.exports = {
+  ensureControlAccountsReceivable,
   ensureForGuestBooking,
   ensureForInternalBooking,
   deactivateForGuestBooking,

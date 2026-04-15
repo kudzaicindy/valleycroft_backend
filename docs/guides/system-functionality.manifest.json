@@ -1,0 +1,239 @@
+{
+  "name": "valleycroft-backend",
+  "description": "Machine-readable index of API modules and endpoints. Human guide: docs/guides/SYSTEM-FUNCTIONALITY.md",
+  "basePath": "/api",
+  "roles": ["ceo", "admin", "finance", "employee"],
+  "modules": [
+    {
+      "id": "health",
+      "prefix": "/api/health",
+      "auth": "none",
+      "endpoints": [{ "method": "GET", "path": "/api/health", "handler": "health check" }]
+    },
+    {
+      "id": "auth",
+      "prefix": "/api/auth",
+      "file": "src/routes/authRoutes.js",
+      "endpoints": [
+        { "method": "POST", "path": "/api/auth/login", "auth": "none" },
+        { "method": "POST", "path": "/api/auth/register", "auth": "Bearer", "roles": ["admin"] },
+        { "method": "GET", "path": "/api/auth/me", "auth": "Bearer" },
+        { "method": "PUT", "path": "/api/auth/change-password", "auth": "Bearer" }
+      ]
+    },
+    {
+      "id": "rooms",
+      "prefix": "/api/rooms",
+      "file": "src/routes/roomRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/rooms", "auth": "none" },
+        { "method": "GET", "path": "/api/rooms/:id/bookings", "auth": "none" },
+        { "method": "GET", "path": "/api/rooms/:id", "auth": "none" },
+        { "method": "POST", "path": "/api/rooms", "auth": "Bearer", "roles": ["admin"] },
+        { "method": "PUT", "path": "/api/rooms/:id", "auth": "Bearer", "roles": ["admin"] },
+        { "method": "DELETE", "path": "/api/rooms/:id", "auth": "Bearer", "roles": ["admin"] }
+      ]
+    },
+    {
+      "id": "guest-bookings",
+      "prefix": "/api/guest-bookings",
+      "file": "src/routes/guestBookingRoutes.js",
+      "endpoints": [
+        { "method": "POST", "path": "/api/guest-bookings", "auth": "none" },
+        { "method": "GET", "path": "/api/guest-bookings/track", "auth": "none" },
+        { "method": "GET", "path": "/api/guest-bookings", "auth": "Bearer", "roles": ["admin", "ceo", "finance"] },
+        { "method": "PUT", "path": "/api/guest-bookings/:id", "auth": "Bearer", "roles": ["admin"] }
+      ]
+    },
+    {
+      "id": "bookings",
+      "prefix": "/api/bookings",
+      "file": "src/routes/bookingRoutes.js",
+      "notes": "All routes require Bearer token",
+      "endpoints": [
+        { "method": "GET", "path": "/api/bookings", "auth": "Bearer", "roles": ["admin", "ceo", "finance"] },
+        { "method": "GET", "path": "/api/bookings/availability", "auth": "Bearer", "roles": ["admin", "ceo", "finance"] },
+        { "method": "GET", "path": "/api/bookings/:id", "auth": "Bearer", "roles": ["admin", "ceo", "finance"] },
+        { "method": "POST", "path": "/api/bookings", "auth": "Bearer", "roles": ["admin"] },
+        { "method": "PUT", "path": "/api/bookings/:id", "auth": "Bearer", "roles": ["admin"] },
+        { "method": "DELETE", "path": "/api/bookings/:id", "auth": "Bearer", "roles": ["admin"] }
+      ]
+    },
+    {
+      "id": "finance",
+      "prefix": "/api/finance",
+      "file": "src/routes/financeRoutes.js",
+      "notes": "All routes require Bearer token",
+      "endpoints": [
+        { "method": "GET", "path": "/api/finance/dashboard", "roles": ["finance", "admin", "ceo"], "query": ["month=YYYY-MM", "revenueMonths=6|12"] },
+        { "method": "GET", "path": "/api/finance/transactions", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/transactions-ledger-format", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/finance/transactions", "roles": ["finance", "admin"] },
+        { "method": "PUT", "path": "/api/finance/transactions/:id", "roles": ["finance", "admin"] },
+        { "method": "DELETE", "path": "/api/finance/transactions/:id", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/finance/cashflow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/cash-flow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/income-statement", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/finance/balance-sheet", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/finance/pl", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/finance/salary", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/finance/salary", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/finance/salary/employee/:id", "roles": ["finance", "admin"] }
+      ]
+    },
+    {
+      "id": "statements",
+      "prefix": "/api/statements",
+      "file": "src/routes/statementsRoutes.js",
+      "notes": "Includes GET /catalog; ledger-basis routes; transaction-basis mirrors finance roles where applicable",
+      "endpoints": [
+        { "method": "GET", "path": "/api/statements/catalog", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/income-statement", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/statements/cash-flow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/cashflow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/balance-sheet", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/statements/pl", "roles": ["finance", "ceo"] },
+        { "method": "GET", "path": "/api/statements/ledger", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/ledger-basis/income-statement", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/ledger-basis/cash-flow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/ledger-basis/cashflow", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/statements/ledger-basis/balance-sheet", "roles": ["finance", "admin", "ceo"] }
+      ]
+    },
+    {
+      "id": "accounting",
+      "prefix": "/api/accounting",
+      "file": "src/routes/accountingRoutes.js",
+      "notes": "Router-level roles: finance, admin, ceo",
+      "endpoints": [
+        { "method": "GET", "path": "/api/accounting/accounts/next-code" },
+        { "method": "GET", "path": "/api/accounting/accounts" },
+        { "method": "POST", "path": "/api/accounting/accounts" },
+        { "method": "PUT", "path": "/api/accounting/accounts/:id" },
+        { "method": "POST", "path": "/api/accounting/journal" },
+        { "method": "POST", "path": "/api/accounting/journal/:id/void" },
+        { "method": "GET", "path": "/api/accounting/ledger" },
+        { "method": "GET", "path": "/api/accounting/journal-entries" },
+        { "method": "GET", "path": "/api/accounting/trial-balance" },
+        { "method": "GET", "path": "/api/accounting/income-statement" },
+        { "method": "GET", "path": "/api/accounting/retained-earnings" },
+        { "method": "GET", "path": "/api/accounting/balance-sheet" },
+        { "method": "GET", "path": "/api/accounting/cash-flow" },
+        { "method": "GET", "path": "/api/accounting/cashflow" },
+        { "method": "GET", "path": "/api/accounting/financial-statements" }
+      ]
+    },
+    {
+      "id": "debtors",
+      "prefix": "/api/debtors",
+      "file": "src/routes/debtorRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/debtors", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/debtors", "roles": ["finance", "admin"] },
+        { "method": "PUT", "path": "/api/debtors/:id", "roles": ["finance", "admin"] },
+        { "method": "DELETE", "path": "/api/debtors/:id", "roles": ["finance", "admin"] }
+      ]
+    },
+    {
+      "id": "suppliers",
+      "prefix": "/api/suppliers",
+      "file": "src/routes/supplierRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/suppliers", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/suppliers", "roles": ["finance", "admin"] },
+        { "method": "PUT", "path": "/api/suppliers/:id", "roles": ["finance", "admin"] },
+        { "method": "POST", "path": "/api/suppliers/payments", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/suppliers/:id/payments", "roles": ["finance", "admin", "ceo"] }
+      ]
+    },
+    {
+      "id": "invoices",
+      "prefix": "/api/invoices",
+      "file": "src/routes/invoiceRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/invoices", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/invoices", "roles": ["finance", "admin"] },
+        { "method": "PUT", "path": "/api/invoices/:id", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/invoices/:id/pdf", "roles": ["finance", "admin", "ceo"] }
+      ]
+    },
+    {
+      "id": "refunds",
+      "prefix": "/api/refunds",
+      "file": "src/routes/refundRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/refunds", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/refunds", "roles": ["finance", "admin"] },
+        { "method": "PUT", "path": "/api/refunds/:id", "roles": ["finance", "admin"] }
+      ]
+    },
+    {
+      "id": "inventory",
+      "prefix": "/api/inventory",
+      "file": "src/routes/inventoryRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/inventory/stock", "roles": ["admin", "ceo"] },
+        { "method": "POST", "path": "/api/inventory/stock", "roles": ["admin"] },
+        { "method": "PUT", "path": "/api/inventory/stock/:id", "roles": ["admin"] },
+        { "method": "DELETE", "path": "/api/inventory/stock/:id", "roles": ["admin"] },
+        { "method": "GET", "path": "/api/inventory/equipment", "roles": ["admin", "ceo"] },
+        { "method": "POST", "path": "/api/inventory/equipment", "roles": ["admin"] },
+        { "method": "PUT", "path": "/api/inventory/equipment/:id", "roles": ["admin"] }
+      ]
+    },
+    {
+      "id": "staff",
+      "prefix": "/api/staff",
+      "file": "src/routes/staffRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/staff/employees", "roles": ["admin", "ceo"] },
+        { "method": "PUT", "path": "/api/staff/employees/:id", "roles": ["admin"] },
+        { "method": "POST", "path": "/api/staff/tasks", "roles": ["admin"] },
+        { "method": "GET", "path": "/api/staff/tasks/:employeeId", "auth": "Bearer" },
+        { "method": "GET", "path": "/api/staff/worklogs", "roles": ["admin", "ceo"] },
+        { "method": "GET", "path": "/api/staff/worklogs/me", "roles": ["employee"] },
+        { "method": "POST", "path": "/api/staff/worklogs", "roles": ["employee"] }
+      ]
+    },
+    {
+      "id": "reports",
+      "prefix": "/api/reports",
+      "file": "src/routes/reportRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/reports/weekly", "roles": ["admin", "finance", "ceo"] },
+        { "method": "GET", "path": "/api/reports/monthly", "roles": ["admin", "finance", "ceo"] },
+        { "method": "GET", "path": "/api/reports/quarterly", "roles": ["admin", "finance", "ceo"] },
+        { "method": "GET", "path": "/api/reports/annual", "roles": ["admin", "finance", "ceo"] },
+        { "method": "GET", "path": "/api/reports/export/:type", "roles": ["admin", "finance", "ceo"] }
+      ]
+    },
+    {
+      "id": "audit",
+      "prefix": "/api/audit",
+      "file": "src/routes/auditRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/audit", "roles": ["admin", "ceo", "finance"] },
+        { "method": "GET", "path": "/api/audit/entity/:name", "roles": ["admin", "ceo", "finance"] },
+        { "method": "GET", "path": "/api/audit/user/:id", "roles": ["admin", "ceo"] }
+      ]
+    },
+    {
+      "id": "emails",
+      "prefix": "/api/emails",
+      "file": "src/routes/emailRoutes.js",
+      "endpoints": [
+        { "method": "GET", "path": "/api/emails", "roles": ["admin", "ceo", "finance"], "query": ["page", "limit", "status", "templateKey", "relatedModel"] }
+      ]
+    }
+  ],
+  "crossCutting": {
+    "cors": "FRONTEND_URL comma-separated; see server.js",
+    "bookingConfirmSideEffects": ["Debtor", "Transaction", "JournalEntry", "Invoice (guest)", "optional email/WhatsApp", "Email log (MongoDB)"],
+    "relatedDocs": [
+      "docs/guides/SYSTEM-FUNCTIONALITY.md",
+      "docs/guides/ACCOUNTING.md",
+      "docs/guides/FRONTEND-GUIDE.md",
+      ".env.example"
+    ]
+  }
+}

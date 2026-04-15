@@ -1,24 +1,105 @@
 /**
- * Optional email (SMTP) and WhatsApp Cloud API delivery after an invoice is created.
- * Misconfiguration or provider errors are logged; they do not fail booking confirmation.
+ * Optional email (SMTP / Gmail app password / Gmail OAuth) and WhatsApp for bookings & invoices.
+ * Misconfiguration or provider errors are logged; they do not fail API responses.
  */
 const nodemailer = require('nodemailer');
+const mailTemplates = require('./mailTemplates');
+const { logOutboundEmail } = require('./emailLogService');
+
+function smtpConfigured() {
+  return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+}
+
+function gmailAppPasswordRaw() {
+  return (
+    process.env.GMAIL_APP_PASSWORD ||
+    process.env.GMAIL_PASSWORD ||
+    process.env.GOOGLE_APP_PASSWORD ||
+    ''
+  );
+}
+
+/** Gmail SMTP with App Password (2FA required; not your normal Google sign-in password). */
+function gmailAppPasswordConfigured() {
+  return !!(process.env.GMAIL_USER?.trim() && gmailAppPasswordRaw().trim());
+}
+
+/** Gmail via OAuth2 (needs one-time consent → GMAIL_REFRESH_TOKEN). */
+function gmailOAuthConfigured() {
+  return !!(
+    process.env.GMAIL_USER &&
+    process.env.GMAIL_CLIENT_ID &&
+    process.env.GMAIL_CLIENT_SECRET &&
+    process.env.GMAIL_REFRESH_TOKEN
+  );
+}
 
 function mailConfigured() {
-  return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  return smtpConfigured() || gmailAppPasswordConfigured() || gmailOAuthConfigured();
 }
 
 function whatsappConfigured() {
   return !!(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
 }
 
+/** Comma-separated admin inboxes for new guest booking alerts */
+function adminBookingNotifyEmails() {
+  const raw = process.env.BOOKING_ADMIN_EMAIL || process.env.BOOKING_NOTIFY_EMAIL || '';
+  return raw
+    .split(',')
+    .map((e) => e.trim())
+    .filter(Boolean);
+}
+
+function adminBookingNotifyConfigured() {
+  return adminBookingNotifyEmails().length > 0;
+}
+
+function getMailFrom() {
+  if (process.env.MAIL_FROM) return process.env.MAIL_FROM;
+  if (gmailAppPasswordConfigured() || gmailOAuthConfigured()) return process.env.GMAIL_USER.trim();
+  return process.env.SMTP_USER;
+}
+
+function gmailAppPasswordPlain() {
+  return gmailAppPasswordRaw().replace(/\s+/g, '');
+}
+
 function getTransporter() {
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
+  if (gmailAppPasswordConfigured()) {
+    return nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.GMAIL_USER.trim(),
+        pass: gmailAppPasswordPlain(),
+      },
+    });
+  }
+  if (gmailOAuthConfigured()) {
+    return nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        type: 'OAuth2',
+        user: process.env.GMAIL_USER.trim(),
+        clientId: process.env.GMAIL_CLIENT_ID.trim(),
+        clientSecret: process.env.GMAIL_CLIENT_SECRET.trim(),
+        refreshToken: process.env.GMAIL_REFRESH_TOKEN.trim(),
+      },
+    });
+  }
+  if (smtpConfigured()) {
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+  }
+  throw new Error('No mail transport configured');
 }
 
 /** E.164-like digits only; common ZA: leading 0 → 27 */
@@ -30,86 +111,196 @@ function normalizeWhatsAppPhone(raw) {
   return digits;
 }
 
-function buildEmailLines(payload) {
-  const lines = (payload.lineItems || [])
-    .map((li) => `  • ${li.description}: ${formatMoney(li.total != null ? li.total : (li.qty || 1) * (li.unitPrice || 0))}`)
-    .join('\n');
-  return lines || '  (see total below)';
-}
-
 function formatMoney(n) {
   const v = Number(n) || 0;
   return `R ${v.toFixed(2)}`;
 }
 
-function buildPlainBody(payload) {
-  const biz = process.env.BUSINESS_NAME || 'Valleyroad';
-  const ref = payload.trackingCode ? `Booking ref: ${payload.trackingCode}\n` : '';
-  return [
-    `Hi ${payload.guestName},`,
-    '',
-    `Thank you for your booking. Your invoice ${payload.invoiceNumber} is ready.`,
-    '',
-    ref,
-    buildEmailLines(payload),
-    '',
-    `Total: ${formatMoney(payload.total)}`,
-    payload.notes ? `\n${payload.notes}` : '',
-    payload.dueDate ? `\nDue date: ${new Date(payload.dueDate).toISOString().slice(0, 10)}` : '',
-    payload.frontendUrl ? `\nMore info: ${payload.frontendUrl}` : '',
-    '',
-    `— ${biz}`,
-  ].join('\n');
-}
+/**
+ * @param {{
+ *   to: string,
+ *   subject: string,
+ *   html: string,
+ *   text: string,
+ *   templateKey: string,
+ *   relatedModel?: 'GuestBooking'|'Booking',
+ *   relatedId?: import('mongoose').Types.ObjectId,
+ * }} opts
+ */
+async function sendMail({ to, subject, html, text, templateKey, relatedModel, relatedId }) {
+  const from = getMailFrom() || '';
+  const base = { templateKey, subject, from, textPreview: text || '' };
 
-function buildHtmlBody(payload) {
-  const biz = process.env.BUSINESS_NAME || 'Valleyroad';
-  const ref = payload.trackingCode
-    ? `<p><strong>Booking ref:</strong> ${escapeHtml(payload.trackingCode)}</p>`
-    : '';
-  const items = (payload.lineItems || [])
-    .map(
-      (li) =>
-        `<tr><td>${escapeHtml(li.description || '')}</td><td style="text-align:right">${formatMoney(
-          li.total != null ? li.total : (li.qty || 1) * (li.unitPrice || 0),
-        )}</td></tr>`,
-    )
-    .join('');
-  return `<p>Hi ${escapeHtml(payload.guestName)},</p>
-<p>Thank you for your booking. Invoice <strong>${escapeHtml(payload.invoiceNumber)}</strong> is attached below.</p>
-${ref}
-<table style="border-collapse:collapse;width:100%;max-width:480px">${items}</table>
-<p><strong>Total:</strong> ${formatMoney(payload.total)}</p>
-${payload.notes ? `<p>${escapeHtml(payload.notes)}</p>` : ''}
-${payload.dueDate ? `<p><strong>Due:</strong> ${escapeHtml(new Date(payload.dueDate).toISOString().slice(0, 10))}</p>` : ''}
-${payload.frontendUrl ? `<p><a href="${escapeHtml(payload.frontendUrl)}">Visit our site</a></p>` : ''}
-<p>— ${escapeHtml(biz)}</p>`;
-}
+  if (!to || !mailConfigured()) {
+    const skipReason = !to ? 'no_recipient' : 'mail_not_configured';
+    await logOutboundEmail({
+      ...base,
+      status: 'skipped',
+      skipReason,
+      to: to || '',
+      relatedModel,
+      relatedId,
+    });
+    return { skipped: true, reason: skipReason };
+  }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  try {
+    const transporter = getTransporter();
+    const info = await transporter.sendMail({ from, to, subject, text, html });
+    await logOutboundEmail({
+      ...base,
+      status: 'sent',
+      to,
+      messageId: info.messageId,
+      relatedModel,
+      relatedId,
+    });
+    return { sent: true, messageId: info.messageId };
+  } catch (err) {
+    await logOutboundEmail({
+      ...base,
+      status: 'failed',
+      to,
+      errorMessage: err.message,
+      relatedModel,
+      relatedId,
+    });
+    throw err;
+  }
 }
 
 async function deliverInvoiceEmail(payload) {
   const to = (payload.email || '').trim();
-  if (!to || !mailConfigured()) {
-    return { skipped: true, reason: !to ? 'no_email' : 'smtp_not_configured' };
-  }
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
-  const subject = `${process.env.BUSINESS_NAME || 'Booking'} — Invoice ${payload.invoiceNumber}`;
-  const transporter = getTransporter();
-  await transporter.sendMail({
-    from,
+  const { html, text } = mailTemplates.bookingConfirmedInvoiceGuest(payload);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — Booking confirmed · Invoice ${payload.invoiceNumber}`;
+  const result = await sendMail({
     to,
     subject,
-    text: buildPlainBody(payload),
-    html: buildHtmlBody(payload),
+    html,
+    text,
+    templateKey: 'booking_confirmed_invoice',
+    relatedModel: payload.relatedModel,
+    relatedId: payload.relatedId,
   });
+  if (result.skipped) return { ...result, channel: 'email' };
   return { sent: true, channel: 'email' };
+}
+
+async function deliverNewBookingAdminEmail(payload) {
+  const recipients = adminBookingNotifyEmails();
+  const { html, text } = mailTemplates.newBookingRequestAdmin(payload);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — New booking request · ${payload.trackingCode || 'ref pending'}`;
+  const relatedId = payload.guestBookingId;
+
+  if (!recipients.length) {
+    await logOutboundEmail({
+      templateKey: 'guest_booking_request_admin',
+      status: 'skipped',
+      skipReason: 'admin_email_not_configured',
+      from: getMailFrom() || '',
+      to: '',
+      subject,
+      textPreview: text,
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'admin_email_not_configured' };
+  }
+  if (!mailConfigured()) {
+    await logOutboundEmail({
+      templateKey: 'guest_booking_request_admin',
+      status: 'skipped',
+      skipReason: 'mail_not_configured',
+      from: '',
+      to: recipients.join(', '),
+      subject,
+      textPreview: text,
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'mail_not_configured' };
+  }
+
+  for (const to of recipients) {
+    await sendMail({
+      to,
+      subject,
+      html,
+      text,
+      templateKey: 'guest_booking_request_admin',
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+  }
+  return { sent: true, channel: 'email', toCount: recipients.length };
+}
+
+async function deliverBookingRequestGuestEmail(payload) {
+  const to = (payload.guestEmail || '').trim();
+  const { html, text } = mailTemplates.bookingRequestReceivedGuest(payload);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — We received your booking request`;
+  return sendMail({
+    to,
+    subject,
+    html,
+    text,
+    templateKey: 'guest_booking_request_guest',
+    relatedModel: 'GuestBooking',
+    relatedId: payload.guestBookingId,
+  });
+}
+
+async function deliverInternalBookingCreatedAdminEmail(payload) {
+  const recipients = adminBookingNotifyEmails();
+  const { html, text } = mailTemplates.newInternalBookingAdmin(payload);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — New staff booking · ${payload.status || 'pending'}`;
+  const relatedId = payload.relatedId;
+
+  if (!recipients.length) {
+    await logOutboundEmail({
+      templateKey: 'internal_booking_created_admin',
+      status: 'skipped',
+      skipReason: 'admin_email_not_configured',
+      from: getMailFrom() || '',
+      to: '',
+      subject,
+      textPreview: text,
+      relatedModel: 'Booking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'admin_email_not_configured' };
+  }
+  if (!mailConfigured()) {
+    await logOutboundEmail({
+      templateKey: 'internal_booking_created_admin',
+      status: 'skipped',
+      skipReason: 'mail_not_configured',
+      from: '',
+      to: recipients.join(', '),
+      subject,
+      textPreview: text,
+      relatedModel: 'Booking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'mail_not_configured' };
+  }
+
+  for (const to of recipients) {
+    await sendMail({
+      to,
+      subject,
+      html,
+      text,
+      templateKey: 'internal_booking_created_admin',
+      relatedModel: 'Booking',
+      relatedId,
+    });
+  }
+  return { sent: true, channel: 'email', toCount: recipients.length };
 }
 
 async function graphSendMessage(messageBody) {
@@ -193,14 +384,15 @@ async function deliverInvoiceWhatsApp(payload) {
  *   dueDate?: Date,
  *   lineItems?: Array<{ description?: string, qty?: number, unitPrice?: number, total?: number }>,
  *   trackingCode?: string,
+ *   relatedModel?: 'GuestBooking'|'Booking',
+ *   relatedId?: import('mongoose').Types.ObjectId,
  * }} payload
  */
 function scheduleInvoiceDelivery(payload) {
-  const frontendUrl = process.env.FRONTEND_URL;
-  const full = { ...payload, frontendUrl };
+  const full = { ...payload };
   setImmediate(() => {
     deliverInvoiceEmail(full).catch((err) => {
-      console.error('[invoice-notify] email failed:', err.message);
+      console.error('[invoice-notify] invoice email failed:', err.message);
     });
     deliverInvoiceWhatsApp(full).catch((err) => {
       console.error('[invoice-notify] whatsapp failed:', err.message);
@@ -208,9 +400,75 @@ function scheduleInvoiceDelivery(payload) {
   });
 }
 
+/**
+ * After a public guest booking is submitted (pending): notify admins + guest.
+ * @param {{
+ *   guestName: string,
+ *   guestEmail: string,
+ *   guestPhone?: string,
+ *   roomName?: string,
+ *   roomType?: string,
+ *   checkIn?: Date,
+ *   checkOut?: Date,
+ *   nights?: number,
+ *   totalAmount?: number,
+ *   deposit?: number,
+ *   trackingCode: string,
+ *   notes?: string,
+ *   source?: string,
+ *   guestBookingId?: import('mongoose').Types.ObjectId,
+ * }} payload
+ */
+function scheduleNewGuestBookingEmails(payload) {
+  setImmediate(() => {
+    deliverNewBookingAdminEmail(payload).catch((err) => {
+      console.error('[booking-notify] admin email failed:', err.message);
+    });
+    deliverBookingRequestGuestEmail(payload).catch((err) => {
+      console.error('[booking-notify] guest request email failed:', err.message);
+    });
+  });
+}
+
+/**
+ * After staff creates an internal Booking (any status): notify admins.
+ * @param {Record<string, unknown>} bookingLean - populated room, from withRoomPreview
+ */
+function scheduleInternalBookingCreatedAdmin(bookingLean) {
+  if (!bookingLean || !bookingLean._id) return;
+  const payload = {
+    guestName: bookingLean.guestName,
+    guestEmail: bookingLean.guestEmail,
+    guestPhone: bookingLean.guestPhone,
+    type: bookingLean.type,
+    roomName: bookingLean.roomName,
+    roomType: bookingLean.roomType,
+    checkIn: bookingLean.checkIn,
+    checkOut: bookingLean.checkOut,
+    eventDate: bookingLean.eventDate,
+    amount: bookingLean.amount,
+    deposit: bookingLean.deposit,
+    status: bookingLean.status,
+    notes: bookingLean.notes,
+    bookingMongoId: String(bookingLean._id),
+    relatedId: bookingLean._id,
+  };
+  setImmediate(() => {
+    deliverInternalBookingCreatedAdminEmail(payload).catch((err) => {
+      console.error('[booking-notify] internal booking admin email failed:', err.message);
+    });
+  });
+}
+
 module.exports = {
   scheduleInvoiceDelivery,
+  scheduleNewGuestBookingEmails,
+  scheduleInternalBookingCreatedAdmin,
   mailConfigured,
+  smtpConfigured,
+  gmailAppPasswordConfigured,
+  gmailOAuthConfigured,
   whatsappConfigured,
+  adminBookingNotifyConfigured,
   normalizeWhatsAppPhone,
 };

@@ -97,7 +97,7 @@ const getNextAccountCode = asyncHandler(async (req, res) => {
 /**
  * POST /api/accounting/accounts
  * Body: { name, type, subType?, normalBalance?, code?, autoCode?: true | { strategy, prefix?, entityId? },
- *   openingBalance?, openingBalanceAsOf?, openingBalanceNote?,
+ *   openingBalance?, openingBalanceAsOf?, openingBalanceNote?, description?,
  *   parentCode?, accountKind?, isActive? }
  * Opening balances are on the account’s **normal** side (see Account schema).
  */
@@ -115,6 +115,7 @@ const createAccount = asyncHandler(async (req, res) => {
     openingBalance,
     openingBalanceAsOf,
     openingBalanceNote,
+    description,
   } = req.body;
 
   if (name == null || String(name).trim() === '' || type == null || String(type).trim() === '') {
@@ -198,6 +199,7 @@ const createAccount = asyncHandler(async (req, res) => {
       openingBalanceAsOf: openingBalanceAsOf ? new Date(openingBalanceAsOf) : undefined,
       openingBalanceNote:
         openingBalanceNote != null ? String(openingBalanceNote).trim() : undefined,
+      description: description != null ? String(description).trim() : undefined,
       createdBy: req.user._id,
     });
   } catch (err) {
@@ -256,6 +258,7 @@ const updateAccount = asyncHandler(async (req, res) => {
   const before = doc.toObject();
   const allowed = [
     'name',
+    'description',
     'isActive',
     'parentCode',
     'openingBalance',
@@ -275,7 +278,10 @@ const updateAccount = asyncHandler(async (req, res) => {
       continue;
     }
     if (key === 'name') doc.name = String(req.body.name).trim();
-    else if (key === 'isActive') doc.isActive = !!req.body.isActive;
+    else if (key === 'description') {
+      doc.description =
+        req.body.description != null ? String(req.body.description).trim() : undefined;
+    } else if (key === 'isActive') doc.isActive = !!req.body.isActive;
     else if (key === 'parentCode') {
       doc.parentCode =
         req.body.parentCode != null ? String(req.body.parentCode).trim() : undefined;

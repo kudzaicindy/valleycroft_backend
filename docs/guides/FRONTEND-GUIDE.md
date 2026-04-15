@@ -1,4 +1,4 @@
-# Frontend API Guide — Valleycroft Backend
+# Frontend API Guide — Valleyroad Backend
 
 Use this guide to wire your frontend to the backend. Every module and endpoint is listed with access, request shape, and examples.
 
@@ -279,7 +279,7 @@ For BnB rows, set **`roomId`** (Room `_id`) so list/detail responses include **`
 
 ### Ledger / accounting (compare with finance statements)
 
-Base: **`/api/accounting`** (JWT; roles **finance**, **admin**, **ceo**). Examples: **`GET /api/accounting/income-statement?year=2026`**, **`GET /api/accounting/balance-sheet?asOfDate=2026-03-31`**, **`GET /api/accounting/cash-flow?month=2026-03`**, **`GET /api/accounting/ledger?startDate=2026-01-01&endDate=2026-03-31`**. Full list and bodies: **`ACCOUNTING.md`**.
+Base: **`/api/accounting`** (JWT; roles **finance**, **admin**, **ceo**). Examples: **`GET /api/accounting/income-statement?year=2026`**, **`GET /api/accounting/balance-sheet?asOfDate=2026-03-31`**, **`GET /api/accounting/cash-flow?month=2026-03`**, **`GET /api/accounting/ledger?startDate=2026-01-01&endDate=2026-03-31`**. Full list and bodies: [`ACCOUNTING.md`](./ACCOUNTING.md).
 
 ---
 

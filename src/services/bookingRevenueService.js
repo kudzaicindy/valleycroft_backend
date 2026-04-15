@@ -1,12 +1,15 @@
 /**
- * When a booking is confirmed: create Debtor (amount owed), income Transaction, and AUTO journal
- * (Dr Accounts Receivable, Cr revenue). Reverses on cancel after confirmation.
- * Statements driven by Transaction + Debtor stay aligned.
+ * Revenue recognition for stays: only when status is **confirmed** (guest or internal booking).
+ * Pending requests do not create Debtor, Transaction, v3 journal, or invoice — no P&L impact until confirm.
+ * On confirm: **JE-01** via `financialGlPostingService` (DR 1010 / CR 4001 or 4002) — Chynae v3.0.
+ * Control A/R **1010** only (no per-booking GL sub-accounts). On cancel after confirm: posts a **reversing**
+ * journal (swapped Dr/Cr on the same accounts) then **voids** the original v3 header — see `postReversalThenVoidFinancialJournalV3`.
  */
 const Debtor = require('../models/Debtor');
 const Transaction = require('../models/Transaction');
 const Invoice = require('../models/Invoice');
 const transactionJournalService = require('./transactionJournalService');
+const financialGlPostingService = require('./financialGlPostingService');
 const guestReceivableAccountService = require('./guestReceivableAccountService');
 const bookingInvoiceService = require('./bookingInvoiceService');
 const { scheduleInvoiceDelivery } = require('./invoiceNotifyService');
@@ -28,6 +31,30 @@ function debtorStatusFor(amountOwed, amountPaid) {
   return 'partial';
 }
 
+/** Plain invoice fields for async email (avoids Mongoose subdoc / buffer issues in setImmediate). */
+function buildInvoiceEmailFields(invoice, stayTotal, deposit) {
+  const o =
+    invoice && typeof invoice.toObject === 'function'
+      ? invoice.toObject({ flattenMaps: true })
+      : invoice || {};
+  const lineItems = (o.lineItems || []).map((li) => ({
+    description: li.description,
+    qty: li.qty,
+    unitPrice: li.unitPrice,
+    total: li.total,
+  }));
+  const tot = Number(o.total);
+  return {
+    invoiceNumber: o.invoiceNumber,
+    total: Number.isFinite(tot) ? tot : stayTotal,
+    deposit,
+    balanceDue: Math.max(0, stayTotal - deposit),
+    notes: o.notes,
+    dueDate: o.dueDate,
+    lineItems,
+  };
+}
+
 /**
  * @param {import('mongoose').Document} gb - GuestBooking mongoose doc
  * @param {import('mongoose').Types.ObjectId} userId
@@ -41,7 +68,9 @@ async function onGuestBookingConfirmed(gb, userId) {
 
   const deposit = Math.min(Number(gb.deposit) || 0, total);
 
-  const arAcc = await guestReceivableAccountService.ensureForGuestBooking(gb, userId);
+  const arAcc = await guestReceivableAccountService.ensureControlAccountsReceivable(userId);
+  gb.receivableAccountId = arAcc._id;
+  await gb.save();
 
   const debtor = await Debtor.create({
     name: gb.guestName,
@@ -71,14 +100,15 @@ async function onGuestBookingConfirmed(gb, userId) {
   });
 
   try {
-    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(tx, userId);
-    tx.journalEntryId = entryId;
-    tx.lines = lines;
+    const je = await financialGlPostingService.postGuestBookingRevenueV3(gb, userId);
+    tx.financialJournalEntryId = je._id;
     await tx.save();
   } catch (err) {
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
-    await guestReceivableAccountService.deactivateForGuestBooking(gb);
+    await guestReceivableAccountService.deactivateForGuestBooking(gb, { skipSave: true });
+    gb.receivableAccountId = undefined;
+    await gb.save();
     throw err;
   }
 
@@ -86,9 +116,12 @@ async function onGuestBookingConfirmed(gb, userId) {
   try {
     invoice = await bookingInvoiceService.createInvoiceForConfirmedGuestBooking(gb, debtor, userId);
   } catch (err) {
+    await financialGlPostingService.voidFinancialJournalEntry(tx.financialJournalEntryId, userId, 'Invoice creation failed');
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
-    await guestReceivableAccountService.deactivateForGuestBooking(gb);
+    await guestReceivableAccountService.deactivateForGuestBooking(gb, { skipSave: true });
+    gb.receivableAccountId = undefined;
+    await gb.save();
     throw err;
   }
 
@@ -97,22 +130,22 @@ async function onGuestBookingConfirmed(gb, userId) {
   gb.invoiceId = invoice._id;
   await gb.save();
 
+  const stayTotal = Number(gb.totalAmount) || 0;
+  const dep = Math.min(Number(gb.deposit) || 0, stayTotal);
   scheduleInvoiceDelivery({
     guestName: gb.guestName,
     email: gb.guestEmail,
     phone: gb.guestPhone,
-    invoiceNumber: invoice.invoiceNumber,
-    total: invoice.total,
-    notes: invoice.notes,
-    dueDate: invoice.dueDate,
-    lineItems: invoice.lineItems,
+    ...buildInvoiceEmailFields(invoice, stayTotal, dep),
     trackingCode: gb.trackingCode,
+    relatedModel: 'GuestBooking',
+    relatedId: gb._id,
   });
 
   return {
     debtorId: debtor._id,
     transactionId: tx._id,
-    journalEntryId: tx.journalEntryId,
+    financialJournalEntryId: tx.financialJournalEntryId,
     invoiceId: invoice._id,
   };
 }
@@ -131,7 +164,9 @@ async function onInternalBookingConfirmed(b, userId) {
   const deposit = Math.min(Number(b.deposit) || 0, total);
   const category = b.type === 'event' ? 'event' : 'booking';
 
-  const arAcc = await guestReceivableAccountService.ensureForInternalBooking(b, userId);
+  const arAcc = await guestReceivableAccountService.ensureControlAccountsReceivable(userId);
+  b.receivableAccountId = arAcc._id;
+  await b.save();
 
   const debtor = await Debtor.create({
     name: b.guestName,
@@ -160,14 +195,15 @@ async function onInternalBookingConfirmed(b, userId) {
   });
 
   try {
-    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(tx, userId);
-    tx.journalEntryId = entryId;
-    tx.lines = lines;
+    const je = await financialGlPostingService.postInternalBookingRevenueV3(b, userId);
+    tx.financialJournalEntryId = je._id;
     await tx.save();
   } catch (err) {
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
-    await guestReceivableAccountService.deactivateForInternalBooking(b);
+    await guestReceivableAccountService.deactivateForInternalBooking(b, { skipSave: true });
+    b.receivableAccountId = undefined;
+    await b.save();
     throw err;
   }
 
@@ -175,9 +211,12 @@ async function onInternalBookingConfirmed(b, userId) {
   try {
     invoice = await bookingInvoiceService.createInvoiceForConfirmedInternalBooking(b, debtor, userId);
   } catch (err) {
+    await financialGlPostingService.voidFinancialJournalEntry(tx.financialJournalEntryId, userId, 'Invoice creation failed');
     await Transaction.findByIdAndDelete(tx._id);
     await Debtor.findByIdAndDelete(debtor._id);
-    await guestReceivableAccountService.deactivateForInternalBooking(b);
+    await guestReceivableAccountService.deactivateForInternalBooking(b, { skipSave: true });
+    b.receivableAccountId = undefined;
+    await b.save();
     throw err;
   }
 
@@ -190,18 +229,16 @@ async function onInternalBookingConfirmed(b, userId) {
     guestName: b.guestName,
     email: b.guestEmail,
     phone: b.guestPhone,
-    invoiceNumber: invoice.invoiceNumber,
-    total: invoice.total,
-    notes: invoice.notes,
-    dueDate: invoice.dueDate,
-    lineItems: invoice.lineItems,
+    ...buildInvoiceEmailFields(invoice, total, deposit),
     trackingCode: undefined,
+    relatedModel: 'Booking',
+    relatedId: b._id,
   });
 
   return {
     debtorId: debtor._id,
     transactionId: tx._id,
-    journalEntryId: tx.journalEntryId,
+    financialJournalEntryId: tx.financialJournalEntryId,
     invoiceId: invoice._id,
   };
 }
@@ -217,6 +254,13 @@ async function reverseGuestBookingRevenue(gb, userId) {
     await guestReceivableAccountService.deactivateForGuestBooking(gb, { skipSave: true });
     await gb.save();
     return { skipped: true };
+  }
+  if (tx.financialJournalEntryId) {
+    await financialGlPostingService.postReversalThenVoidFinancialJournalV3(
+      tx.financialJournalEntryId,
+      userId,
+      { voidReason: 'Guest booking cancelled' }
+    );
   }
   if (tx.journalEntryId) {
     await transactionJournalService.voidJournalLinkedToTransaction(tx, userId, 'Guest booking cancelled');
@@ -250,6 +294,13 @@ async function reverseInternalBookingRevenue(b, userId) {
     await guestReceivableAccountService.deactivateForInternalBooking(b, { skipSave: true });
     await b.save();
     return { skipped: true };
+  }
+  if (tx.financialJournalEntryId) {
+    await financialGlPostingService.postReversalThenVoidFinancialJournalV3(
+      tx.financialJournalEntryId,
+      userId,
+      { voidReason: 'Booking cancelled' }
+    );
   }
   if (tx.journalEntryId) {
     await transactionJournalService.voidJournalLinkedToTransaction(tx, userId, 'Booking cancelled');

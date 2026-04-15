@@ -17,7 +17,7 @@ If you see **`Unknown account code: 1002`**, this database has no `Account` rows
 
 Base path: **`/api/accounting`**
 
-Same **ledger** listing is also available at **`GET /api/statements/ledger`** (see **Statements hub** in `FRONTEND-GUIDE.md`).
+Same **ledger** listing is also available at **`GET /api/statements/ledger`** (see **Statements hub** in [`FRONTEND-GUIDE.md`](./FRONTEND-GUIDE.md)).
 
 ## Post journal entries (only way to move balances)
 

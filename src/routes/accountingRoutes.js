@@ -2,12 +2,20 @@ const express = require('express');
 const { protect, authorize } = require('../middleware/auth');
 const ledgerService = require('../services/ledgerService');
 const incomeStatementService = require('../services/incomeStatementService');
-const balanceSheetService = require('../services/balanceSheetService');
-const cashFlowService = require('../services/cashFlowService');
+const {
+  getIncomeStatementV3,
+  getCashFlowV3,
+  getBalanceSheetV3,
+  shapeIncomeStatementPresentationV7,
+  shapeBalanceSheetPresentationV3,
+  accountingDisclosureIncomeStatement,
+  accountingDisclosureBalanceSheet,
+} = require('../services/financialStatementsV3Service');
 const { listGeneralLedger } = require('../controllers/accountingLedgerController');
 const { resolvePeriodDates } = require('../utils/accountingPeriod');
 const logAudit = require('../utils/audit');
 const accountChartController = require('../controllers/accountChartController');
+const financeStatements = require('../controllers/financeStatements');
 
 const router = express.Router();
 router.use(protect);
@@ -75,26 +83,17 @@ router.get('/trial-balance', async (req, res) => {
 
 // GET /api/accounting/income-statement?startDate=&endDate= | ?year=2026 | ?month=2026-03
 router.get('/income-statement', async (req, res) => {
-  try {
-    const dates = resolvePeriodDates(req.query);
-    if (!dates) {
-      return res.status(400).json({
-        success: false,
-        error: 'Provide startDate & endDate, or year (e.g. 2026), or month (e.g. 2026-03)',
-      });
-    }
-    const result = await incomeStatementService.generate(dates.startDate, dates.endDate);
-    await logAudit({
-      userId: req.user._id,
-      role: req.user.role,
-      action: 'export',
-      entity: 'IncomeStatementLedger',
-      req,
+  const dates = resolvePeriodDates(req.query);
+  if (!dates) {
+    return res.status(400).json({
+      success: false,
+      error: 'Provide startDate & endDate, or year (e.g. 2026), or month (e.g. 2026-03)',
     });
-    res.json({ success: true, data: result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
   }
+  return financeStatements.getIncomeStatement(
+    { ...req, query: { ...req.query, startDate: dates.startDate, endDate: dates.endDate } },
+    res
+  );
 });
 
 // GET /api/accounting/retained-earnings
@@ -117,54 +116,27 @@ router.get('/retained-earnings', async (req, res) => {
   }
 });
 
-// GET /api/accounting/balance-sheet?asOfDate=&periodStartDate=
+// GET /api/accounting/balance-sheet?asOfDate= | asAt=
 router.get('/balance-sheet', async (req, res) => {
-  try {
-    const { asOfDate, periodStartDate } = req.query;
-    if (!asOfDate) {
-      return res.status(400).json({ success: false, error: 'asOfDate is required (YYYY-MM-DD)' });
-    }
-    const result = await balanceSheetService.generate(asOfDate, periodStartDate || null);
-    if (!result.isBalanced) {
-      console.error(`[BalanceSheet] Not balanced at ${asOfDate}. Variance: ${result.variance}`);
-    }
-    await logAudit({
-      userId: req.user._id,
-      role: req.user.role,
-      action: 'export',
-      entity: 'BalanceSheetLedger',
-      req,
-    });
-    res.json({ success: true, data: result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+  const asOfDate = req.query.asOfDate || req.query.asAt;
+  if (!asOfDate) {
+    return res.status(400).json({ success: false, error: 'asOfDate or asAt is required (YYYY-MM-DD)' });
   }
+  return financeStatements.getBalanceSheet({ ...req, query: { ...req.query, asOfDate } }, res);
 });
 
 async function getLedgerCashFlow(req, res) {
-  try {
-    const dates = resolvePeriodDates(req.query);
-    if (!dates) {
-      return res.status(400).json({
-        success: false,
-        error: 'Provide startDate & endDate, or year, or month',
-      });
-    }
-    const result = await cashFlowService.generate(dates.startDate, dates.endDate);
-    if (!result.summary.isReconciled) {
-      console.warn('[CashFlow] Closing cash may not match ledger cash accounts');
-    }
-    await logAudit({
-      userId: req.user._id,
-      role: req.user.role,
-      action: 'export',
-      entity: 'CashFlowLedger',
-      req,
+  const dates = resolvePeriodDates(req.query);
+  if (!dates) {
+    return res.status(400).json({
+      success: false,
+      error: 'Provide startDate & endDate, or year, or month',
     });
-    res.json({ success: true, data: result });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
   }
+  return financeStatements.getCashFlow(
+    { ...req, query: { ...req.query, startDate: dates.startDate, endDate: dates.endDate } },
+    res
+  );
 }
 
 // GET /api/accounting/cash-flow (preferred)
@@ -172,7 +144,7 @@ router.get('/cash-flow', getLedgerCashFlow);
 // GET /api/accounting/cashflow (compat alias)
 router.get('/cashflow', getLedgerCashFlow);
 
-// GET /api/accounting/financial-statements — all three + checks
+// GET /api/accounting/financial-statements — all three (v3 basis) + checks
 router.get('/financial-statements', async (req, res) => {
   try {
     const dates = resolvePeriodDates(req.query);
@@ -183,24 +155,50 @@ router.get('/financial-statements', async (req, res) => {
       });
     }
     const { startDate, endDate } = dates;
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
 
-    const [incomeStatement, balanceSheet, cashFlow] = await Promise.all([
-      incomeStatementService.generate(startDate, endDate),
-      balanceSheetService.generate(endDate, startDate),
-      cashFlowService.generate(startDate, endDate),
+    const [incomeRaw, balanceSheetCore, cashFlow] = await Promise.all([
+      getIncomeStatementV3(start, end),
+      getBalanceSheetV3(end),
+      getCashFlowV3(start, end),
     ]);
+
+    const incomeStatement = {
+      accounting: accountingDisclosureIncomeStatement(incomeRaw.period),
+      presentation: shapeIncomeStatementPresentationV7(incomeRaw),
+      ...incomeRaw,
+    };
+
+    const balanceSheet = {
+      accounting: accountingDisclosureBalanceSheet(balanceSheetCore.asAt),
+      presentation: shapeBalanceSheetPresentationV3(balanceSheetCore),
+      ...balanceSheetCore,
+    };
+
+    await logAudit({
+      userId: req.user._id,
+      role: req.user.role,
+      action: 'export',
+      entity: 'FinancialStatementsBundleV3',
+      req,
+    });
 
     res.json({
       success: true,
+      basis: 'double_entry_v3',
       data: {
         period: dates,
         incomeStatement,
         balanceSheet,
         cashFlow,
         checks: {
-          netIncomeConsistent: incomeStatement.netIncome === cashFlow.operatingActivities.netIncome,
-          cashReconciled: cashFlow.summary.isReconciled,
-          balanceSheetBalanced: balanceSheet.isBalanced,
+          balanceSheetEquationHolds: balanceSheetCore.balances,
+          cash1001MatchesMovement: cashFlow.cash1001?.matchesNetCashMovement ?? null,
+          netProfitBeforeTax: incomeRaw.netProfitBeforeTax,
+          netCashFlowAccount1001: cashFlow.netCashMovement,
+          changeInAccountsReceivable1010: cashFlow.accounting?.changeInAccountsReceivable1010 ?? null,
         },
       },
     });

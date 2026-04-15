@@ -3,6 +3,7 @@ const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const { withRoomPreviewMany, withRoomPreview } = require('../utils/bookingPreview');
 const bookingRevenueService = require('../services/bookingRevenueService');
+const { scheduleInternalBookingCreatedAdmin } = require('../services/invoiceNotifyService');
 
 const list = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
@@ -71,7 +72,9 @@ const create = asyncHandler(async (req, res) => {
     req,
   });
   const created = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
-  res.status(201).json({ success: true, data: withRoomPreview(created) });
+  const preview = withRoomPreview(created);
+  scheduleInternalBookingCreatedAdmin(preview);
+  res.status(201).json({ success: true, data: preview });
 });
 
 const update = asyncHandler(async (req, res) => {

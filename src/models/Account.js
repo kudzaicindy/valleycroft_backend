@@ -28,6 +28,8 @@ const accountSchema = new mongoose.Schema(
   {
     code: { type: String, required: true, unique: true, trim: true },
     name: { type: String, required: true },
+    /** Optional chart note (e.g. scope of 2010 deposit liability). */
+    description: { type: String, trim: true },
     type: { type: String, required: true, enum: ACCOUNT_TYPES },
     subType: { type: String, required: true, enum: SUB_TYPES },
     normalBalance: { type: String, required: true, enum: NORMAL_BALANCE },

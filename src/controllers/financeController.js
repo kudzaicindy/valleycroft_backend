@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const Transaction = require('../models/Transaction');
+const GuestBooking = require('../models/GuestBooking');
 const Salary = require('../models/Salary');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
@@ -14,6 +15,8 @@ const IDEMPOTENCY_MAX = 500;
 
 /** Same-payload duplicate POSTs within this window collapse to one row (double-click, Strict Mode, etc.) */
 const DUPLICATE_BODY_WINDOW_MS = 20 * 1000;
+/** Manual income category "booking" vs recent confirm with same amount — avoid second GL (ms) */
+const MANUAL_BOOKING_INCOME_DEDUPE_AGAINST_CONFIRM_MS = 10 * 60 * 1000;
 /** One in-flight create per normalized body fingerprint (parallel duplicate requests share one Promise) */
 const inFlightTransactionByFingerprint = new Map();
 
@@ -200,6 +203,10 @@ const getTransactions = asyncHandler(async (req, res) => {
 });
 
 const createTransaction = asyncHandler(async (req, res) => {
+  const rawGb = req.body.guestBooking;
+  const guestBookingDedupeId =
+    rawGb != null && /^[0-9a-fA-F]{24}$/.test(String(rawGb).trim()) ? String(rawGb).trim() : null;
+
   const {
     journalEntryId: _ignoreJournal,
     lines: _ignoreLines,
@@ -222,6 +229,20 @@ const createTransaction = asyncHandler(async (req, res) => {
     if (hit && Date.now() - hit.at < IDEMPOTENCY_WINDOW_MS) {
       const data = await leanTransactionWithBookingPreview(hit.txId);
       return res.status(201).json({ success: true, data, idempotentReplay: true });
+    }
+  }
+
+  if (guestBookingDedupeId) {
+    const gb = await GuestBooking.findById(guestBookingDedupeId).select('revenueTransactionId status').lean();
+    if (gb?.status === 'confirmed' && gb.revenueTransactionId) {
+      const data = await leanTransactionWithBookingPreview(gb.revenueTransactionId);
+      return res.status(200).json({
+        success: true,
+        data,
+        duplicateSuppressed: true,
+        message:
+          'Revenue for this booking is already in the ledger (posted when the booking was confirmed). No duplicate entry was created.',
+      });
     }
   }
 
@@ -257,6 +278,31 @@ const createTransaction = asyncHandler(async (req, res) => {
       return { kind: 'ok', tx: existing, created: false };
     }
 
+    if (
+      norm.type === 'income' &&
+      String(norm.category || '').toLowerCase() === 'booking' &&
+      Number(norm.amount) > 0
+    ) {
+      const recentConfirm = await Transaction.findOne({
+        source: { $in: ['guest_booking_confirm', 'booking_confirm'] },
+        type: 'income',
+        amount: norm.amount,
+        createdAt: {
+          $gte: new Date(Date.now() - MANUAL_BOOKING_INCOME_DEDUPE_AGAINST_CONFIRM_MS),
+        },
+      })
+        .sort({ createdAt: -1 })
+        .exec();
+      if (recentConfirm) {
+        return {
+          kind: 'ok',
+          tx: recentConfirm,
+          created: false,
+          suppressReason: 'booking_confirm_already_gl',
+        };
+      }
+    }
+
     const tx = await Transaction.create({
       ...bodySafe,
       createdBy: req.user._id,
@@ -264,11 +310,10 @@ const createTransaction = asyncHandler(async (req, res) => {
       revenueRecognition: 'cash',
     });
     try {
-      const { entryId, lines } = await transactionJournalService.postJournalForTransaction(
-        tx,
-        req.user._id
-      );
+      const { entryId, lines, financialJournalEntryId } =
+        await transactionJournalService.postJournalForTransaction(tx, req.user._id);
       tx.journalEntryId = entryId;
+      tx.financialJournalEntryId = financialJournalEntryId;
       tx.lines = lines;
       await tx.save();
     } catch (err) {
@@ -299,17 +344,26 @@ const createTransaction = asyncHandler(async (req, res) => {
     });
   }
 
-  const { tx, created } = outcome;
+  const { tx, created, suppressReason } = outcome;
   const data = await leanTransactionWithBookingPreview(tx._id);
 
   if (clientIdem != null && String(clientIdem).trim()) {
     idempotencyRemember(idempotencyFingerprint(req.user._id, String(clientIdem).trim(), bodySafe), tx._id);
   }
 
+  const dupMeta =
+    created || !suppressReason
+      ? {}
+      : {
+          message:
+            'Same amount was already posted from a confirmed booking (Dr A/R, Cr revenue). This manual booking-income row was not created to avoid double-counting.',
+        };
+
   res.status(201).json({
     success: true,
     data,
     ...(created ? {} : { idempotentReplay: true, duplicateSuppressed: true }),
+    ...(suppressReason ? { suppressReason, ...dupMeta } : {}),
   });
 });
 
@@ -319,6 +373,15 @@ const updateTransaction = asyncHandler(async (req, res) => {
   const before = tx.toObject();
   let voidedOld = false;
   try {
+    if (tx.financialJournalEntryId) {
+      await transactionJournalService.voidFinancialJournalLinkedToTransaction(
+        tx,
+        req.user._id,
+        'Transaction updated — reversing prior entry'
+      );
+      voidedOld = true;
+      tx.financialJournalEntryId = undefined;
+    }
     if (tx.journalEntryId) {
       await transactionJournalService.voidJournalLinkedToTransaction(
         tx,
@@ -342,11 +405,10 @@ const updateTransaction = asyncHandler(async (req, res) => {
     tx.journalEntryId = undefined;
     tx.lines = [];
     await tx.save();
-    const { entryId, lines } = await transactionJournalService.postJournalForTransaction(
-      tx,
-      req.user._id
-    );
+    const { entryId, lines, financialJournalEntryId } =
+      await transactionJournalService.postJournalForTransaction(tx, req.user._id);
     tx.journalEntryId = entryId;
+    tx.financialJournalEntryId = financialJournalEntryId;
     tx.lines = lines;
     await tx.save();
   } catch (err) {
@@ -362,7 +424,7 @@ const updateTransaction = asyncHandler(async (req, res) => {
           revenueRecognition: before.revenueRecognition,
           receivableAccountCode: before.receivableAccountCode,
         };
-        const { entryId: recoveryEntryId, lines: recoveryLines } =
+        const { entryId: recoveryEntryId, lines: recoveryLines, financialJournalEntryId: recoveryFjId } =
           await transactionJournalService.postJournalForTransaction(recovery, req.user._id);
         await Transaction.findByIdAndUpdate(tx._id, {
           type: before.type,
@@ -377,6 +439,7 @@ const updateTransaction = asyncHandler(async (req, res) => {
           revenueRecognition: before.revenueRecognition,
           receivableAccountCode: before.receivableAccountCode,
           journalEntryId: recoveryEntryId,
+          financialJournalEntryId: recoveryFjId,
           lines: recoveryLines,
         });
       } catch (rollbackErr) {
@@ -408,6 +471,13 @@ const deleteTransaction = asyncHandler(async (req, res) => {
   if (!tx) return res.status(404).json({ success: false, message: 'Transaction not found' });
   const before = tx.toObject();
   try {
+    if (tx.financialJournalEntryId) {
+      await transactionJournalService.voidFinancialJournalLinkedToTransaction(
+        tx,
+        req.user._id,
+        'Transaction deleted'
+      );
+    }
     if (tx.journalEntryId) {
       await transactionJournalService.voidJournalLinkedToTransaction(
         tx,

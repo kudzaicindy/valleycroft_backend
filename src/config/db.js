@@ -21,9 +21,9 @@ const connectDB = async () => {
         if (n === 0) {
           console.warn(
             '\n[Accounting] No chart of accounts in this database. Creating finance transactions will fail ' +
-              '(e.g. "Unknown account code: 1002") until you run:\n' +
-              '  npm run seed:accounting\n' +
-              'Or use: npm run seed:all (after seed:users).\n'
+              '(e.g. "Unknown account code: 1001") until you run:\n' +
+              '  npm run seed:chart-v3\n' +
+              '(alias: npm run seed:accounting)\n'
           );
         }
       })

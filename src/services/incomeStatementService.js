@@ -70,7 +70,7 @@ class IncomeStatementService {
     const { netIncome } = await this.generate(startDate, endDate);
     const currentDividend = await this._getPeriodDividends(startDate, endDate);
 
-    const reAcc = await Account.findOne({ code: '3010' });
+    const reAcc = await Account.findOne({ code: '3003' });
     let openingRE = 0;
     if (reAcc) {
       const bal = await ledgerService.getAccountBalance(reAcc._id, dayBefore);

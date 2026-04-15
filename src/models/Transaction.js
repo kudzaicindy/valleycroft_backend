@@ -47,6 +47,11 @@ const transactionSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   /** Posted double-entry journal (see /api/accounting); voided when transaction is updated/deleted */
   journalEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry' },
+  /** Chynae v3 GL header (financial_journal_entries) */
+  financialJournalEntryId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FinancialJournalEntry',
+  },
   /** Snapshot of GL lines at post time (same economic meaning as linked journal entry). */
   lines: { type: [transactionLineSchema], default: [] },
 }, { timestamps: true });

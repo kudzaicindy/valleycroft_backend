@@ -1,32 +1,38 @@
 /**
  * Maps legacy Transaction (income/expense + category) to double-entry journal lines.
- * Cash side defaults to Bank (1002). Run `npm run seed:accounting` first.
+ * Cash side defaults to Cash / Bank (1001) per Chynae v3.0. Run `npm run seed:chart-v3` first.
+ * Also mirrors the same economics into v3 `financial_journal_entries` / `financial_transaction_lines`
+ * so published statements (`basis: double_entry_v3`) include manual finance transactions.
  */
 const Account = require('../models/Account');
 const ledgerService = require('./ledgerService');
+const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
+const { createFinancialJournalEntry } = require('../utils/financialJournal');
+const financialGlPostingService = require('./financialGlPostingService');
+const { round2 } = require('../utils/math');
 
-const BANK = '1002';
+const BANK = '1001';
 /** Accounts Receivable — used when revenue is recognised on booking confirmation (accrual) */
 const ACCOUNTS_RECEIVABLE = '1010';
 
 function mapIncomeAccount(category) {
   const c = (category || '').toLowerCase();
-  if (c === 'booking') return '4001'; // Sales Revenue
-  if (c === 'event') return '4002'; // Service Revenue
-  if (c === 'interest' || c === 'other_income') return '4010';
-  return '4020'; // Other Income
+  if (c === 'booking') return '4001';
+  if (c === 'event') return '4002';
+  if (c === 'interest' || c === 'other_income') return '4003';
+  return '4003';
 }
 
 function mapExpenseAccount(category) {
   const c = (category || '').toLowerCase();
   if (c === 'salary') return '6001';
-  if (c === 'utilities') return '6003';
-  if (c === 'marketing') return '6004';
-  if (c === 'supplies') return '6005';
-  if (c === 'supplier') return '6005';
-  if (c === 'refund') return '4001'; // reduce revenue (cash refund to customer)
-  if (c === 'booking') return '5001'; // treat as direct cost / COGS
-  return '6005'; // Office Supplies default
+  if (c === 'utilities') return '6020';
+  if (c === 'marketing') return '6022';
+  if (c === 'supplies') return '5001';
+  if (c === 'supplier') return '6013';
+  if (c === 'refund') return '4010';
+  if (c === 'booking') return '5001';
+  return '6013';
 }
 
 function buildLines(tx) {
@@ -62,6 +68,66 @@ function buildLines(tx) {
   throw new Error('Invalid transaction type');
 }
 
+function v3TransactionTypeForManual(tx) {
+  if (tx.type === 'income') {
+    if (tx.revenueRecognition === 'accrual_ar') return 'booking_revenue';
+    return 'other_income';
+  }
+  const c = (tx.category || '').toLowerCase();
+  if (c === 'salary') return 'salary_payment';
+  if (c === 'utilities') return 'utility_payment';
+  if (c === 'supplier') return 'supplier_payment';
+  if (c === 'supplies') return 'consumables_purchase';
+  if (c === 'refund') return 'refund_issued';
+  if (c === 'marketing') return 'other_expense';
+  if (c === 'booking') return 'consumables_purchase';
+  return 'other_expense';
+}
+
+/**
+ * Build v3 GL line payloads (balanced DR/CR) matching `buildLines` account codes.
+ */
+async function buildV3LinesFromSpecs(lineSpecs) {
+  const out = [];
+  for (const spec of lineSpecs) {
+    const debit = Number(spec.debit) || 0;
+    const credit = Number(spec.credit) || 0;
+    const codeStr = String(spec.accountCode).trim();
+    const n = Number(codeStr);
+    if (debit > 0) {
+      if (!Number.isNaN(n) && n > 0 && CHART_OF_ACCOUNTS_V3[n]) {
+        out.push(financialGlPostingService.glLine(n, 'DR', debit));
+      } else {
+        const acc = await Account.findOne({ code: codeStr }).select('name type').lean();
+        if (!acc) throw new Error(`Unknown account code for v3 GL: ${codeStr}`);
+        out.push({
+          accountCode: codeStr,
+          accountName: acc.name,
+          accountType: String(acc.type).toLowerCase(),
+          side: 'DR',
+          amount: round2(debit),
+        });
+      }
+    }
+    if (credit > 0) {
+      if (!Number.isNaN(n) && n > 0 && CHART_OF_ACCOUNTS_V3[n]) {
+        out.push(financialGlPostingService.glLine(n, 'CR', credit));
+      } else {
+        const acc = await Account.findOne({ code: codeStr }).select('name type').lean();
+        if (!acc) throw new Error(`Unknown account code for v3 GL: ${codeStr}`);
+        out.push({
+          accountCode: codeStr,
+          accountName: acc.name,
+          accountType: String(acc.type).toLowerCase(),
+          side: 'CR',
+          amount: round2(credit),
+        });
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Resolve account codes to ids + names for embedding on Transaction.lines.
  * @param {Array<{ accountCode: string, debit?: number, credit?: number, description?: string }>} lineSpecs
@@ -87,9 +153,14 @@ async function resolveLinesFromSpecs(lineSpecs) {
 
 /**
  * Post AUTO journal for a saved transaction document.
- * @returns {Promise<{ entryId: import('mongoose').Types.ObjectId, lines: object[] }>}
+ * @returns {Promise<{ entryId: import('mongoose').Types.ObjectId, lines: object[], financialJournalEntryId?: import('mongoose').Types.ObjectId }>}
  */
 async function postJournalForTransaction(tx, userId) {
+  if (tx.financialJournalEntryId) {
+    throw new Error(
+      'This transaction already has a v3 journal (e.g. from booking confirmation). A second AUTO entry would double-count revenue.'
+    );
+  }
   const lineSpecs = buildLines(tx);
   const entryDate = tx.date ? new Date(tx.date) : new Date();
   const resolvedLines = await resolveLinesFromSpecs(lineSpecs);
@@ -101,7 +172,31 @@ async function postJournalForTransaction(tx, userId) {
     lines: lineSpecs,
     createdBy: userId,
   });
-  return { entryId, lines: resolvedLines };
+
+  let financialJournalEntryId;
+  try {
+    const v3Lines = await buildV3LinesFromSpecs(lineSpecs);
+    const je = await createFinancialJournalEntry(
+      {
+        transactionType: v3TransactionTypeForManual(tx),
+        date: entryDate,
+        description: `[AUTO] Transaction ${tx._id} — ${tx.type} / ${tx.category || 'general'}`,
+        reference: `TX:${tx._id}`,
+        createdBy: userId,
+      },
+      v3Lines
+    );
+    financialJournalEntryId = je._id;
+  } catch (v3Err) {
+    try {
+      await ledgerService.voidEntry(entryId.toString(), 'v3 mirror failed — rolling back legacy AUTO entry', userId);
+    } catch (voidErr) {
+      console.error('[transactionJournal] Legacy rollback after v3 failure failed:', voidErr.message);
+    }
+    throw v3Err;
+  }
+
+  return { entryId, lines: resolvedLines, financialJournalEntryId };
 }
 
 async function voidJournalLinkedToTransaction(tx, userId, reason) {
@@ -109,11 +204,40 @@ async function voidJournalLinkedToTransaction(tx, userId, reason) {
   await ledgerService.voidEntry(tx.journalEntryId.toString(), reason, userId);
 }
 
+async function voidFinancialJournalLinkedToTransaction(tx, userId, reason) {
+  if (!tx.financialJournalEntryId) return;
+  await financialGlPostingService.voidFinancialJournalEntry(tx.financialJournalEntryId, userId, reason);
+}
+
+/**
+ * One-time backfill: v3 mirror only (no new legacy JournalEntry). For manual txs created before v3 mirroring.
+ */
+async function mirrorManualTransactionToV3Ledger(txDoc, userId) {
+  if (String(txDoc.source || '') !== 'manual') return { skipped: true, reason: 'not_manual' };
+  if (txDoc.financialJournalEntryId) return { skipped: true, reason: 'already_has_v3' };
+  const lineSpecs = buildLines(txDoc);
+  const entryDate = txDoc.date ? new Date(txDoc.date) : new Date();
+  const v3Lines = await buildV3LinesFromSpecs(lineSpecs);
+  const je = await createFinancialJournalEntry(
+    {
+      transactionType: v3TransactionTypeForManual(txDoc),
+      date: entryDate,
+      description: `[BACKFILL] Transaction ${txDoc._id} — ${txDoc.type} / ${txDoc.category || 'general'}`,
+      reference: `TX:${txDoc._id}`,
+      createdBy: userId,
+    },
+    v3Lines
+  );
+  return { financialJournalEntryId: je._id };
+}
+
 module.exports = {
   buildLines,
   resolveLinesFromSpecs,
   postJournalForTransaction,
   voidJournalLinkedToTransaction,
+  voidFinancialJournalLinkedToTransaction,
+  mirrorManualTransactionToV3Ledger,
   BANK,
   ACCOUNTS_RECEIVABLE,
 };

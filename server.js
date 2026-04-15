@@ -58,7 +58,9 @@ app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
 app.use('/api/invoices', require('./src/routes/invoiceRoutes'));
 app.use('/api/refunds', require('./src/routes/refundRoutes'));
 app.use('/api/audit', require('./src/routes/auditRoutes'));
+app.use('/api/emails', require('./src/routes/emailRoutes'));
 app.use('/api/accounting', require('./src/routes/accountingRoutes'));
+app.use('/api/accounting/v3', require('./src/routes/financialGlV3Routes'));
 
 // Health check — critical for Render keepalive
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

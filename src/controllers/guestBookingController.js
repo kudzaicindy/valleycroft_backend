@@ -5,6 +5,7 @@ const logAudit = require('../utils/audit');
 const { withRoomPreview, withRoomPreviewMany } = require('../utils/bookingPreview');
 const { isRoomAvailableForDates } = require('../utils/availability');
 const bookingRevenueService = require('../services/bookingRevenueService');
+const { scheduleNewGuestBookingEmails } = require('../services/invoiceNotifyService');
 const crypto = require('crypto');
 
 const generateTrackingCode = () =>
@@ -56,6 +57,22 @@ const createGuestBooking = asyncHandler(async (req, res) => {
     trackingCode: generateTrackingCode(),
     source: req.body.source || 'website',
     notes,
+  });
+  scheduleNewGuestBookingEmails({
+    guestName,
+    guestEmail,
+    guestPhone,
+    roomName: room.name,
+    roomType: room.type,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    nights,
+    totalAmount: booking.totalAmount,
+    deposit: booking.deposit,
+    trackingCode: booking.trackingCode,
+    notes,
+    source: booking.source,
+    guestBookingId: booking._id,
   });
   res.status(201).json({
     success: true,
