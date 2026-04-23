@@ -1,7 +1,7 @@
 // Financial statements — Chynae Digital Solutions v3.0 (double_entry_v3 basis).
 // Mount via financeRoutes.js and /api/statements/*.
 
-const logAudit = require('../utils/audit');
+const FinancialJournalEntry = require('../models/FinancialJournalEntry');
 const {
   getIncomeStatementV3,
   getCashFlowV3,
@@ -11,6 +11,7 @@ const {
   accountingDisclosureIncomeStatement,
   accountingDisclosureBalanceSheet,
 } = require('../services/financialStatementsV3Service');
+const { buildLegacyCashFlowDashboardResponse } = require('../services/cashFlowDashboardLegacyV3Service');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -69,6 +70,48 @@ const parseDates = (query) => {
   return { start, end };
 };
 
+function parsePagination(query) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(500, Math.max(1, parseInt(query.limit, 10) || 100));
+  const skip = (page - 1) * limit;
+  return { page, limit, skip };
+}
+
+async function pagedEntryLines({ match, lineMatch = {}, page, limit, skip }) {
+  const dataPipeline = [
+    { $match: match },
+    { $unwind: '$entries' },
+    { $match: lineMatch },
+    { $sort: { date: -1, createdAt: -1 } },
+    {
+      $project: {
+        _id: 1,
+        journalId: 1,
+        publicTransactionId: 1,
+        transactionType: 1,
+        date: 1,
+        description: 1,
+        reference: 1,
+        isVoided: 1,
+        line: '$entries',
+      },
+    },
+    { $skip: skip },
+    { $limit: limit },
+  ];
+  const countPipeline = [
+    { $match: match },
+    { $unwind: '$entries' },
+    { $match: lineMatch },
+    { $count: 'n' },
+  ];
+  const [data, countRows] = await Promise.all([
+    FinancialJournalEntry.aggregate(dataPipeline),
+    FinancialJournalEntry.aggregate(countPipeline),
+  ]);
+  return { data, meta: { page, limit, total: countRows[0]?.n || 0 } };
+}
+
 // ─── INCOME STATEMENT (§6.1 / §7) ──────────────────────────────────────────
 exports.getIncomeStatement = async (req, res) => {
   try {
@@ -84,8 +127,6 @@ exports.getIncomeStatement = async (req, res) => {
       getIncomeStatementV3(start, end),
       getIncomeStatementV3(priorStart, priorEnd),
     ]);
-
-    await logAudit({ userId: req.user._id, role: req.user.role, action: 'export', entity: 'IncomeStatement', req });
 
     res.json({
       success: true,
@@ -128,8 +169,6 @@ exports.getBalanceSheet = async (req, res) => {
       console.error('[BalanceSheet v3] Equation not balanced as at', asAt.toISOString().slice(0, 10));
     }
 
-    await logAudit({ userId: req.user._id, role: req.user.role, action: 'export', entity: 'BalanceSheet', req });
-
     const data = {
       accounting: accountingDisclosureBalanceSheet(core.asAt),
       presentation: shapeBalanceSheetPresentationV3(core),
@@ -147,11 +186,19 @@ exports.getBalanceSheet = async (req, res) => {
 exports.getCashFlow = async (req, res) => {
   try {
     const { start, end } = parseDates(req.query);
-    const data = await getCashFlowV3(start, end);
+    const rawV3 =
+      String(req.query.format || req.query.view || '').toLowerCase() === 'v3' ||
+      String(req.query.rawV3 || '').toLowerCase() === 'true';
 
-    await logAudit({ userId: req.user._id, role: req.user.role, action: 'export', entity: 'CashFlow', req });
+    const data = rawV3
+      ? await getCashFlowV3(start, end)
+      : await buildLegacyCashFlowDashboardResponse(start, end);
 
-    res.json({ success: true, basis: 'double_entry_v3', data });
+    if (rawV3) {
+      res.json({ success: true, basis: 'double_entry_v3', data });
+    } else {
+      res.json({ success: true, data });
+    }
   } catch (err) {
     console.error('Cash flow error:', err);
     res.status(500).json({ success: false, message: err.message || 'Failed to generate cash flow statement' });
@@ -163,8 +210,6 @@ exports.getPL = async (req, res) => {
   try {
     const { start, end } = parseDates(req.query);
     const current = await getIncomeStatementV3(start, end);
-
-    await logAudit({ userId: req.user._id, role: req.user.role, action: 'export', entity: 'PL', req });
 
     res.json({
       success: true,
@@ -178,5 +223,63 @@ exports.getPL = async (req, res) => {
   } catch (err) {
     console.error('P&L error:', err);
     res.status(500).json({ success: false, message: err.message || 'Failed to generate P&L statement' });
+  }
+};
+
+// ─── Statement Drilldowns (v3 lines) ────────────────────────────────────────
+exports.getIncomeStatementTransactions = async (req, res) => {
+  try {
+    const { start, end } = parseDates(req.query);
+    const { page, limit, skip } = parsePagination(req.query);
+    const match = {
+      date: { $gte: start, $lte: end },
+      isVoided: false,
+      'entries.0': { $exists: true },
+    };
+    const lineMatch = { 'entries.accountType': { $in: ['revenue', 'expense'] } };
+    const result = await pagedEntryLines({ match, lineMatch, page, limit, skip });
+    return res.json({ success: true, basis: 'double_entry_v3', ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message || 'Failed to load income statement transactions' });
+  }
+};
+
+exports.getCashFlowTransactions = async (req, res) => {
+  try {
+    const { start, end } = parseDates(req.query);
+    const { page, limit, skip } = parsePagination(req.query);
+    const txType = req.query.transactionType ? String(req.query.transactionType).trim() : null;
+    const match = {
+      date: { $gte: start, $lte: end },
+      isVoided: false,
+      'entries.0': { $exists: true },
+      ...(txType ? { transactionType: txType } : {}),
+    };
+    const lineMatch = { 'entries.accountCode': '1001' };
+    const result = await pagedEntryLines({ match, lineMatch, page, limit, skip });
+    return res.json({ success: true, basis: 'double_entry_v3', ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message || 'Failed to load cash flow transactions' });
+  }
+};
+
+exports.getBalanceSheetTransactions = async (req, res) => {
+  try {
+    const asAtRaw = req.query.asAt || req.query.asOfDate || req.query.asOf;
+    const asAt = asAtRaw ? parseDateParamToUtcEnd(asAtRaw) : parseDateParamToUtcEnd(new Date().toISOString());
+    const { page, limit, skip } = parsePagination(req.query);
+    const accountType = req.query.accountType ? String(req.query.accountType).trim().toLowerCase() : null;
+    const match = {
+      date: { $lte: asAt },
+      isVoided: false,
+      'entries.0': { $exists: true },
+    };
+    const lineMatch = accountType
+      ? { 'entries.accountType': accountType }
+      : { 'entries.accountType': { $in: ['asset', 'liability', 'equity'] } };
+    const result = await pagedEntryLines({ match, lineMatch, page, limit, skip });
+    return res.json({ success: true, basis: 'double_entry_v3', asAt, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message || 'Failed to load balance sheet transactions' });
   }
 };

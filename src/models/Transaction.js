@@ -33,7 +33,7 @@ const transactionSchema = new mongoose.Schema({
   /** manual = cash-style journal; booking_confirm_* uses accrual Dr AR / Cr revenue */
   source: {
     type: String,
-    enum: ['manual', 'guest_booking_confirm', 'booking_confirm'],
+    enum: ['manual', 'guest_booking_confirm', 'booking_confirm', 'debtor_payment'],
     default: 'manual',
   },
   /** cash: Dr Bank; accrual_ar: Dr Accounts Receivable (on booking confirmation) */

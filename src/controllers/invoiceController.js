@@ -1,6 +1,26 @@
 const Invoice = require('../models/Invoice');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
+const INVOICE_UPDATE_FIELDS = [
+  'type',
+  'relatedTo',
+  'issueDate',
+  'dueDate',
+  'lineItems',
+  'subtotal',
+  'tax',
+  'total',
+  'status',
+  'notes',
+];
+
+function pickInvoiceUpdates(body = {}) {
+  const out = {};
+  for (const key of INVOICE_UPDATE_FIELDS) {
+    if (body[key] !== undefined) out[key] = body[key];
+  }
+  return out;
+}
 
 const list = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
@@ -30,7 +50,7 @@ const update = asyncHandler(async (req, res) => {
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
   const before = invoice.toObject();
-  Object.assign(invoice, req.body);
+  Object.assign(invoice, pickInvoiceUpdates(req.body));
   await invoice.save();
   await logAudit({
     userId: req.user._id,

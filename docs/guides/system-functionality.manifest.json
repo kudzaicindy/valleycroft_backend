@@ -63,7 +63,7 @@
       "id": "finance",
       "prefix": "/api/finance",
       "file": "src/routes/financeRoutes.js",
-      "notes": "All routes require Bearer token",
+      "notes": "All routes require Bearer token. Debtors, suppliers, invoices, and refunds are also mounted here (e.g. GET /api/finance/debtors/pending-bookings) so finance UIs need not use /api/admin/debtors.",
       "endpoints": [
         { "method": "GET", "path": "/api/finance/dashboard", "roles": ["finance", "admin", "ceo"], "query": ["month=YYYY-MM", "revenueMonths=6|12"] },
         { "method": "GET", "path": "/api/finance/transactions", "roles": ["finance", "admin", "ceo"] },
@@ -78,7 +78,13 @@
         { "method": "GET", "path": "/api/finance/pl", "roles": ["finance", "ceo"] },
         { "method": "GET", "path": "/api/finance/salary", "roles": ["finance", "admin", "ceo"] },
         { "method": "POST", "path": "/api/finance/salary", "roles": ["finance", "admin"] },
-        { "method": "GET", "path": "/api/finance/salary/employee/:id", "roles": ["finance", "admin"] }
+        { "method": "GET", "path": "/api/finance/salary/employee/:id", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/finance/debtors", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/debtors/pending-bookings", "roles": ["finance", "admin", "ceo"] },
+        { "method": "POST", "path": "/api/finance/debtors/:id/payments", "roles": ["finance", "admin"] },
+        { "method": "GET", "path": "/api/finance/suppliers", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/invoices", "roles": ["finance", "admin", "ceo"] },
+        { "method": "GET", "path": "/api/finance/refunds", "roles": ["finance", "admin", "ceo"] }
       ]
     },
     {

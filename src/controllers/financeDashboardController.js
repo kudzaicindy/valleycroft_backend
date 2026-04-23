@@ -453,6 +453,37 @@ async function sumIncome(start, end) {
   return r?.t || 0;
 }
 
+/** Revenue used by finance dashboard cards: recognized booking + event income only. */
+async function sumRevenue(start, end) {
+  const [r] = await Transaction.aggregate([
+    {
+      $match: {
+        type: 'income',
+        category: { $in: ['booking', 'event'] },
+        source: { $in: ['booking_confirm', 'guest_booking_confirm'] },
+        date: { $gte: start, $lte: end },
+      },
+    },
+    { $group: { _id: null, t: { $sum: '$amount' } } },
+  ]);
+  return r?.t || 0;
+}
+
+/** Cash inflow (money received): income transactions recognised on cash basis only. */
+async function sumCashIn(start, end) {
+  const [r] = await Transaction.aggregate([
+    {
+      $match: {
+        type: 'income',
+        date: { $gte: start, $lte: end },
+        $or: [{ revenueRecognition: 'cash' }, { revenueRecognition: { $exists: false } }],
+      },
+    },
+    { $group: { _id: null, t: { $sum: '$amount' } } },
+  ]);
+  return r?.t || 0;
+}
+
 async function sumRefunds(start, end) {
   const [r] = await Transaction.aggregate([
     {
@@ -637,7 +668,11 @@ function formatActivity(log) {
 async function financeActivityToday(limit = 25) {
   const start = new Date();
   start.setUTCHours(0, 0, 0, 0);
-  const logs = await AuditLog.find({ timestamp: { $gte: start } })
+  const importantActions = ['create', 'update', 'delete'];
+  const logs = await AuditLog.find({
+    timestamp: { $gte: start },
+    action: { $in: importantActions },
+  })
     .sort({ timestamp: -1 })
     .limit(limit)
     .select('action entity entityId after timestamp')
@@ -695,6 +730,127 @@ async function buildDeadlines(y, m) {
   return deadlines;
 }
 
+/** JWT role from protect middleware — only these hit this route via authorize(). */
+function dashboardRoleFromRequest(req) {
+  const r = String(req.user?.role || '').toLowerCase();
+  if (r === 'ceo' || r === 'finance' || r === 'admin') return r;
+  return 'finance';
+}
+
+/**
+ * SPA paths under `/finance` (canonical API base `/api/finance`).
+ * `roles` lists who sees each quick link.
+ */
+function quickLinksForDashboardRole(role) {
+  const all = [
+    { id: 'transactions', label: 'Transactions', href: '/finance/transactions', roles: ['finance', 'admin', 'ceo'] },
+    {
+      id: 'debtorsPending',
+      label: 'Pending debtors',
+      href: '/finance/debtors/pending-bookings',
+      roles: ['finance', 'admin', 'ceo'],
+    },
+    { id: 'chartOfAccounts', label: 'Chart of accounts', href: '/accounting/accounts', roles: ['finance', 'admin'] },
+    { id: 'cashFlow', label: 'Cash flow', href: '/finance/cash-flow', roles: ['finance', 'admin', 'ceo'] },
+    {
+      id: 'incomeStatement',
+      label: 'Income statement',
+      href: '/finance/income-statement',
+      roles: ['finance', 'admin', 'ceo'],
+    },
+    { id: 'balanceSheet', label: 'Balance sheet', href: '/finance/balance-sheet', roles: ['finance', 'admin', 'ceo'] },
+  ];
+  return all.filter((x) => x.roles.includes(role)).map(({ id, label, href }) => ({ id, label, href }));
+}
+
+/**
+ * Role-based dashboard: same aggregates for everyone; CEO gets an executive layout
+ * (no raw activity feed, shorter queues, smaller movements list).
+ * @param {Record<string, unknown>} payload
+ * @param {'finance'|'admin'|'ceo'} role
+ */
+function shapeDashboardPayloadForRole(payload, role) {
+  const controlCentre = {
+    ...payload.controlCentre,
+    quickLinks: quickLinksForDashboardRole(role),
+  };
+  if (role === 'ceo' && payload.controlCentre?.sectionKeys) {
+    controlCentre.sectionKeys = { ...payload.controlCentre.sectionKeys };
+    delete controlCentre.sectionKeys.activityToday;
+  }
+
+  if (role === 'ceo') {
+    const { activityToday: _drop, ...rest } = payload;
+    const ops = payload.operationsDashboard
+      ? {
+          ...payload.operationsDashboard,
+          movementsToday: Array.isArray(payload.operationsDashboard.movementsToday)
+            ? payload.operationsDashboard.movementsToday.slice(0, 10)
+            : [],
+        }
+      : payload.operationsDashboard;
+    return {
+      ...rest,
+      controlCentre,
+      operationsDashboard: ops,
+      paymentQueue: Array.isArray(payload.paymentQueue) ? payload.paymentQueue.slice(0, 12) : payload.paymentQueue,
+      invoicesDueAndRecent: Array.isArray(payload.invoicesDueAndRecent)
+        ? payload.invoicesDueAndRecent.slice(0, 8)
+        : payload.invoicesDueAndRecent,
+    };
+  }
+
+  return { ...payload, controlCentre };
+}
+
+function dashboardMeta(role, shaped) {
+  const layout = role === 'ceo' ? 'executive' : 'operations';
+  const sectionCatalog = [
+    { key: 'controlCentre', label: 'Control centre', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'operationsDashboard', label: 'Operations', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'kpis', label: 'KPIs', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'period', label: 'Period', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'ledgerActivity', label: 'Ledger activity', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'collections', label: 'Collections', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'debtors', label: 'Debtor aging', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'supplierPayables', label: 'Supplier payables', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'revenueReceiptsMonthly', label: 'Revenue trend', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'revenueMonthly', label: 'Revenue monthly', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'cashflowMonthly', label: 'Cashflow monthly', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'ledgerSnapshot', label: 'Ledger snapshot', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'invoicesDueAndRecent', label: 'Invoices due / recent', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'paymentQueue', label: 'Payment queue', roles: ['finance', 'admin', 'ceo'] },
+    { key: 'activityToday', label: "Today's activity", roles: ['finance', 'admin'] },
+    { key: 'deadlines', label: 'Deadlines', roles: ['finance', 'admin', 'ceo'] },
+  ];
+  const modules = sectionCatalog.map((m) => ({
+    key: m.key,
+    label: m.label,
+    visible: m.roles.includes(role),
+  }));
+  return {
+    role,
+    layout,
+    primaryAppBase: '/finance',
+    /** Call these REST bases from the finance dashboard — do not use `/api/admin/*` for finance data. */
+    api: {
+      useAdminPrefix: false,
+      bases: {
+        finance: '/api/finance',
+        statements: '/api/statements',
+        accounting: '/api/accounting',
+        accountingV3: '/api/accounting/v3',
+        debtors: '/api/finance/debtors',
+        suppliers: '/api/finance/suppliers',
+        invoices: '/api/finance/invoices',
+        refunds: '/api/finance/refunds',
+      },
+    },
+    modules,
+    sectionKeysInResponse: Object.keys(shaped),
+  };
+}
+
 /**
  * GET /api/finance/dashboard
  * Query: month=YYYY-MM (default current UTC month), revenueMonths=6|12
@@ -750,9 +906,9 @@ const getDashboard = asyncHandler(async (req, res) => {
     countPostedJournalLines(mtdStart, mtdEnd),
     countPostedJournalLines(priorMtdStart, priorMtdEnd),
     countPostedJournalLines(prevMonthStart, prevMonthEnd),
-    sumIncome(mtdStart, mtdEnd),
-    sumIncome(priorMtdStart, priorMtdEnd),
-    sumIncome(prevMonthStart, prevMonthEnd),
+    sumRevenue(mtdStart, mtdEnd),
+    sumRevenue(priorMtdStart, priorMtdEnd),
+    sumRevenue(prevMonthStart, prevMonthEnd),
     sumIncome(monthStart, monthEnd),
     sumRefunds(monthStart, monthEnd),
     sumExpenseOps(monthStart, monthEnd),
@@ -817,8 +973,14 @@ const getDashboard = asyncHandler(async (req, res) => {
   const monthlyReceipts = await Promise.all(
     monthSpecs.map(async ({ ty, tm }) => {
       const { start: ms, end: me } = monthBounds(ty, tm);
-      const [inc, ref] = await Promise.all([sumIncome(ms, me), sumRefunds(ms, me)]);
-      const net = round2(inc - ref);
+      const [inc, ref, exp, cashIn] = await Promise.all([
+        sumRevenue(ms, me),
+        sumRefunds(ms, me),
+        sumExpenseOps(ms, me),
+        sumCashIn(ms, me),
+      ]);
+      // Receipts should mirror revenue (gross collections), not net of refunds.
+      const net = round2(inc);
       const label = new Date(Date.UTC(ty, tm, 1)).toLocaleString('en-ZA', { month: 'long' });
       return {
         key: `${ty}-${String(tm + 1).padStart(2, '0')}`,
@@ -826,7 +988,9 @@ const getDashboard = asyncHandler(async (req, res) => {
         monthIndex: tm + 1,
         label,
         grossIncome: round2(inc),
+        cashIn: round2(cashIn),
         refunds: round2(ref),
+        expenses: round2(exp),
         netReceipts: net,
       };
     })
@@ -841,8 +1005,8 @@ const getDashboard = asyncHandler(async (req, res) => {
   const priorYearWindowSums = await Promise.all(
     monthlyReceipts.map(async (row) => {
       const { start: ps, end: pe } = monthBounds(row.year - 1, row.monthIndex - 1);
-      const [inc, ref] = await Promise.all([sumIncome(ps, pe), sumRefunds(ps, pe)]);
-      return round2(inc - ref);
+      const [inc, ref] = await Promise.all([sumRevenue(ps, pe), sumRefunds(ps, pe)]);
+      return round2(inc);
     })
   );
   const priorYearWindowSum = priorYearWindowSums.reduce((a, b) => a + b, 0);
@@ -871,7 +1035,7 @@ const getDashboard = asyncHandler(async (req, res) => {
       : null;
 
   const headline = buildControlHeadline(ledgerMeta, invOpenStats);
-  const receiptsMtd = round2(collectionsMtd - refundsMtd);
+  const receiptsMtd = round2(collectionsMtd);
   const postedComparisonNote = isFullMonth
     ? 'Compared to full prior calendar month.'
     : 'Same day-range vs prior month (MTD).';
@@ -882,11 +1046,8 @@ const getDashboard = asyncHandler(async (req, res) => {
     headline,
     ledger: ledgerMeta,
     invoices: invOpenStats,
-    quickLinks: [
-      { id: 'transactions', label: 'Transactions', href: '/finance/transactions' },
-      { id: 'chartOfAccounts', label: 'Chart of accounts', href: '/accounting/accounts' },
-      { id: 'cashFlow', label: 'Cash flow', href: '/accounting/cash-flow' },
-    ],
+    /** Replaced per-role in `shapeDashboardPayloadForRole`. */
+    quickLinks: [],
     tiles: {
       receiptsMtd,
       openInvoicesCount: invOpenStats.openInvoicesCount,
@@ -906,6 +1067,8 @@ const getDashboard = asyncHandler(async (req, res) => {
     /** Same payload as root `data.*` — use these string keys to read sibling sections without duplication. */
     sectionKeys: {
       revenueReceiptsMonthly: 'revenueReceiptsMonthly',
+      revenueMonthly: 'revenueMonthly',
+      cashflowMonthly: 'cashflowMonthly',
       debtorAging: 'debtors',
       ledgerSnapshot: 'ledgerSnapshot',
       paymentQueue: 'paymentQueue',
@@ -951,67 +1114,93 @@ const getDashboard = asyncHandler(async (req, res) => {
     activity,
   };
 
+  const role = dashboardRoleFromRequest(req);
+  const rawData = {
+    /** Finance control centre layout + headline; pair with `sectionKeys` for charts/tables. */
+    controlCentre,
+    /** Operations dashboard cards (check-ins/outs today, stock alerts, occupancy, movements). */
+    operationsDashboard,
+    /** Flat KPIs (includes headline + tile numbers). */
+    kpis,
+    period: {
+      monthKey: `${y}-${String(m + 1).padStart(2, '0')}`,
+      label: monthLabel,
+      monthStart: monthStart.toISOString(),
+      monthEnd: monthEnd.toISOString(),
+      mtdStart: mtdStart.toISOString(),
+      mtdEnd: mtdEnd.toISOString(),
+      isFullMonth,
+    },
+    currency: 'ZAR',
+    ledgerActivity: {
+      postedLinesThisMonth: postedLinesMtd,
+      postedLinesVsComparable: {
+        priorValue: isFullMonth ? postedLinesFullPrior : postedLinesPriorMtd,
+        changePct: postedChangeVsPriorMonth,
+        note: isFullMonth
+          ? 'Compared to full prior calendar month.'
+          : 'Compared to same day-range in prior month (MTD-style).',
+      },
+    },
+    collections: {
+      mtd: round2(collectionsMtd),
+      priorComparable: round2(collectionsPriorMtd),
+      fullPriorMonth: round2(collectionsFullPriorMonth),
+      changePctVsPriorComparable: collectionsChangeVsPriorMtd,
+    },
+    debtors: aging,
+    supplierPayables: payables,
+    revenueReceiptsMonthly: {
+      windowMonths: revenueWindow,
+      months: monthlyReceipts,
+      averagePerMonth: avgPerMonth,
+      windowTotalNetReceipts: round2(thisWindowSum),
+      priorYearSameMonthsTotal: round2(priorYearWindowSum),
+      yoyChangePct,
+    },
+    revenueMonthly: {
+      windowMonths: revenueWindow,
+      months: monthlyReceipts.map((r) => ({
+        key: r.key,
+        label: r.label,
+        revenue: round2(r.grossIncome || 0),
+        expenses: round2(r.expenses || 0),
+        net: round2((Number(r.grossIncome) || 0) - (Number(r.expenses) || 0)),
+      })),
+    },
+    cashflowMonthly: {
+      windowMonths: revenueWindow,
+      months: monthlyReceipts.map((r) => ({
+        key: r.key,
+        label: r.label,
+        cashIn: round2(r.cashIn || 0),
+        cashOut: round2((Number(r.refunds) || 0) + (Number(r.expenses) || 0)),
+        netCashFlow: round2((Number(r.cashIn) || 0) - ((Number(r.refunds) || 0) + (Number(r.expenses) || 0))),
+      })),
+    },
+    ledgerSnapshot: {
+      monthKey: `${y}-${String(m + 1).padStart(2, '0')}`,
+      bnbRevenue: bookingTotal,
+      eventHire: eventTotal,
+      otherIncome: round2(Math.max(0, incomeFullMonth - bookingTotal - eventTotal)),
+      totalExpenses: round2(expenseFullMonth),
+      refunds: round2(refundsFullMonth),
+      netProfit: netProfitMonth,
+      netRevenue: netRevenueMonth,
+    },
+    invoicesDueAndRecent: invoiceRows,
+    /** Invoices + payroll row, sorted by due date — “Due & recent” table. */
+    paymentQueue,
+    activityToday: activity,
+    deadlines,
+  };
+
+  const data = shapeDashboardPayloadForRole(rawData, role);
+
   res.json({
     success: true,
-    data: {
-      /** Finance control centre layout + headline; pair with `sectionKeys` for charts/tables. */
-      controlCentre,
-      /** Operations dashboard cards (check-ins/outs today, stock alerts, occupancy, movements). */
-      operationsDashboard,
-      /** Flat KPIs (includes headline + tile numbers). */
-      kpis,
-      period: {
-        monthKey: `${y}-${String(m + 1).padStart(2, '0')}`,
-        label: monthLabel,
-        monthStart: monthStart.toISOString(),
-        monthEnd: monthEnd.toISOString(),
-        mtdStart: mtdStart.toISOString(),
-        mtdEnd: mtdEnd.toISOString(),
-        isFullMonth,
-      },
-      currency: 'ZAR',
-      ledgerActivity: {
-        postedLinesThisMonth: postedLinesMtd,
-        postedLinesVsComparable: {
-          priorValue: isFullMonth ? postedLinesFullPrior : postedLinesPriorMtd,
-          changePct: postedChangeVsPriorMonth,
-          note: isFullMonth
-            ? 'Compared to full prior calendar month.'
-            : 'Compared to same day-range in prior month (MTD-style).',
-        },
-      },
-      collections: {
-        mtd: round2(collectionsMtd),
-        priorComparable: round2(collectionsPriorMtd),
-        fullPriorMonth: round2(collectionsFullPriorMonth),
-        changePctVsPriorComparable: collectionsChangeVsPriorMtd,
-      },
-      debtors: aging,
-      supplierPayables: payables,
-      revenueReceiptsMonthly: {
-        windowMonths: revenueWindow,
-        months: monthlyReceipts,
-        averagePerMonth: avgPerMonth,
-        windowTotalNetReceipts: round2(thisWindowSum),
-        priorYearSameMonthsTotal: round2(priorYearWindowSum),
-        yoyChangePct,
-      },
-      ledgerSnapshot: {
-        monthKey: `${y}-${String(m + 1).padStart(2, '0')}`,
-        bnbRevenue: bookingTotal,
-        eventHire: eventTotal,
-        otherIncome: round2(Math.max(0, incomeFullMonth - bookingTotal - eventTotal)),
-        totalExpenses: round2(expenseFullMonth),
-        refunds: round2(refundsFullMonth),
-        netProfit: netProfitMonth,
-        netRevenue: netRevenueMonth,
-      },
-      invoicesDueAndRecent: invoiceRows,
-      /** Invoices + payroll row, sorted by due date — “Due & recent” table. */
-      paymentQueue,
-      activityToday: activity,
-      deadlines,
-    },
+    meta: dashboardMeta(role, data),
+    data,
   });
 });
 

@@ -1,6 +1,5 @@
 const Transaction = require('../models/Transaction');
 const { asyncHandler } = require('../utils/helpers');
-const logAudit = require('../utils/audit');
 
 const runAggregation = async (start, end) => {
   const match = { date: { $gte: new Date(start), $lte: new Date(end) } };
@@ -65,13 +64,6 @@ const exportReport = asyncHandler(async (req, res) => {
     start = new Date(end.getFullYear(), 0, 1);
   }
   const data = await runAggregation(start, end);
-  await logAudit({
-    userId: req.user._id,
-    role: req.user.role,
-    action: 'export',
-    entity: 'Report',
-    req,
-  });
   res.setHeader('Content-Type', 'application/json');
   res.json({ success: true, data });
 });

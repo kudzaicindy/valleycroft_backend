@@ -84,6 +84,41 @@ async function postInternalBookingRevenueV3(bookingDoc, userId, options = {}) {
   );
 }
 
+/**
+ * JE-02 — Booking payment received against Accounts Receivable (DR 1001 / CR 1010).
+ * No new revenue is recognised here; this clears previously recognised receivable.
+ */
+async function postBookingPaymentAgainstArV3(debtorDoc, amount, userId, options = {}) {
+  const paid = round2(Number(amount) || 0);
+  if (paid <= 0) throw new Error('Payment amount must be positive');
+  const label =
+    debtorDoc?.name ||
+    debtorDoc?.bookingRef?.guestName ||
+    debtorDoc?.guestBookingRef?.guestName ||
+    'Guest';
+  const reference = options.reference || debtorDoc?.reference || undefined;
+  const journalDate =
+    options.journalDate != null && options.journalDate !== ''
+      ? new Date(options.journalDate)
+      : new Date();
+
+  return createFinancialJournalEntry(
+    {
+      transactionType: 'booking_payment',
+      date: journalDate,
+      description: `Booking payment received — ${label}`,
+      reference,
+      bookingRef: debtorDoc?.guestBookingRef || undefined,
+      internalBookingRef: debtorDoc?.bookingRef || undefined,
+      createdBy: userId,
+      source: 'debtor_payment',
+      sourceModel: 'Debtor',
+      sourceId: debtorDoc?._id,
+    },
+    [glLine(1001, 'DR', paid), glLine(1010, 'CR', paid)]
+  );
+}
+
 async function voidFinancialJournalEntry(journalEntryId, userId, reason) {
   if (!journalEntryId) return { skipped: true };
   const doc = await FinancialJournalEntry.findById(journalEntryId);
@@ -180,6 +215,7 @@ module.exports = {
   glLine,
   postGuestBookingRevenueV3,
   postInternalBookingRevenueV3,
+  postBookingPaymentAgainstArV3,
   voidFinancialJournalEntry,
   postReversalThenVoidFinancialJournalV3,
   linesFromReversedEntries,

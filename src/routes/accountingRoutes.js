@@ -11,7 +11,7 @@ const {
   accountingDisclosureIncomeStatement,
   accountingDisclosureBalanceSheet,
 } = require('../services/financialStatementsV3Service');
-const { listGeneralLedger } = require('../controllers/accountingLedgerController');
+const { listGeneralLedger, listAccountTransactions } = require('../controllers/accountingLedgerController');
 const { resolvePeriodDates } = require('../utils/accountingPeriod');
 const logAudit = require('../utils/audit');
 const accountChartController = require('../controllers/accountChartController');
@@ -68,6 +68,7 @@ router.post('/journal/:id/void', async (req, res) => {
 
 // GET /api/accounting/ledger?startDate=&endDate=&status=POSTED&page=1&limit=50
 router.get('/ledger', listGeneralLedger);
+router.get('/accounts/:accountCode/transactions', listAccountTransactions);
 // GET /api/accounting/journal-entries (compat alias)
 router.get('/journal-entries', listGeneralLedger);
 
@@ -176,14 +177,6 @@ router.get('/financial-statements', async (req, res) => {
       presentation: shapeBalanceSheetPresentationV3(balanceSheetCore),
       ...balanceSheetCore,
     };
-
-    await logAudit({
-      userId: req.user._id,
-      role: req.user.role,
-      action: 'export',
-      entity: 'FinancialStatementsBundleV3',
-      req,
-    });
 
     res.json({
       success: true,

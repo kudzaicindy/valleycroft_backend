@@ -4,9 +4,24 @@ const financeController = require('../controllers/financeController');
 const financeStatements = require('../controllers/financeStatements');
 const financeDashboardController = require('../controllers/financeDashboardController');
 const { listLedgerAsTransactions } = require('../controllers/accountingLedgerController');
+const debtorRoutes = require('./debtorRoutes');
+const supplierRoutes = require('./supplierRoutes');
+const invoiceRoutes = require('./invoiceRoutes');
+const refundRoutes = require('./refundRoutes');
+const expenseRoutes = require('./expenseRoutes');
 
 const router = express.Router();
 router.use(protect);
+
+/**
+ * Finance hub — same routers as /api/debtors, /api/suppliers, etc., so the UI can use
+ * only `/api/finance/...` (avoid /api/admin/debtors/... for finance, admin, and ceo).
+ */
+router.use('/debtors', debtorRoutes);
+router.use('/suppliers', supplierRoutes);
+router.use('/invoices', invoiceRoutes);
+router.use('/refunds', refundRoutes);
+router.use('/expenses', expenseRoutes);
 
 router.get('/dashboard', authorize('finance', 'admin', 'ceo'), financeDashboardController.getDashboard);
 router.get('/transactions', authorize('finance', 'admin', 'ceo'), financeController.getTransactions);

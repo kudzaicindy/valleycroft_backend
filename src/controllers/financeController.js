@@ -1,12 +1,137 @@
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Transaction = require('../models/Transaction');
 const GuestBooking = require('../models/GuestBooking');
 const Salary = require('../models/Salary');
+const User = require('../models/User');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const transactionJournalService = require('../services/transactionJournalService');
+const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
 const { attachLedgerEntriesToTransactions } = require('../services/transactionLedgerLinesService');
 const { withRoomPreview } = require('../utils/bookingPreview');
+
+const FINANCE_TX_MAX_LIMIT = 500;
+/** When filtering by GL account, scan recent rows in-range then filter in memory (cap for safety). */
+const FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP = 3000;
+
+function parseUtcStart(iso) {
+  const s = String(iso || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00.000Z`);
+  const d = new Date(s);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+function parseUtcEnd(iso) {
+  const s = String(iso || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T23:59:59.999Z`);
+  const d = new Date(s);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+}
+
+function accountDisplayName(accountCode) {
+  const n = Number(String(accountCode).trim());
+  if (!Number.isFinite(n)) return String(accountCode);
+  return CHART_OF_ACCOUNTS_V3[n]?.name || String(accountCode);
+}
+
+/**
+ * Normalized GL-style lines for grouping: embedded `lines`, legacy `ledgerEntry.lines`, or inferred from `buildLines`.
+ * @param {Record<string, unknown>} tx
+ * @returns {Array<{ accountCode: string, accountName: string, debit: number, credit: number, description: string }>}
+ */
+function getLedgerStyleLinesForTransaction(tx) {
+  if (Array.isArray(tx.lines) && tx.lines.length) {
+    return tx.lines.map((l) => ({
+      accountCode: String(l.accountCode || '').trim() || '—',
+      accountName: String(l.accountName || '').trim() || accountDisplayName(l.accountCode),
+      debit: Number(l.debit) || 0,
+      credit: Number(l.credit) || 0,
+      description: String(l.description || ''),
+    }));
+  }
+  if (tx.ledgerEntry && Array.isArray(tx.ledgerEntry.lines) && tx.ledgerEntry.lines.length) {
+    return tx.ledgerEntry.lines.map((l) => ({
+      accountCode: String(l.accountCode || '').trim() || '—',
+      accountName: String(l.accountName || '').trim() || accountDisplayName(l.accountCode),
+      debit: Number(l.debit) || 0,
+      credit: Number(l.credit) || 0,
+      description: String(l.description || ''),
+    }));
+  }
+  try {
+    const specs = transactionJournalService.buildLines(tx);
+    return specs.map((s) => ({
+      accountCode: String(s.accountCode).trim(),
+      accountName: accountDisplayName(s.accountCode),
+      debit: Number(s.debit) || 0,
+      credit: Number(s.credit) || 0,
+      description: String(s.description || ''),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-account rollups + line-level drill-down for the finance transactions UI.
+ * @param {Array<Record<string, unknown>>} rows
+ */
+function buildByAccountDrillDown(rows, drillParamsNoAccount) {
+  /** @type {Map<string, { accountCode: string, accountName: string, debitTotal: number, creditTotal: number, drillDown: { lines: object[] } }>} */
+  const byCode = new Map();
+  const baseQs = drillParamsNoAccount || '';
+
+  for (const tx of rows) {
+    const lines = getLedgerStyleLinesForTransaction(tx);
+    const txId = String(tx._id);
+    const txDate = tx.date;
+    const txDesc = tx.description || '';
+    const txType = tx.type;
+    const txCategory = tx.category || '';
+
+    for (const L of lines) {
+      const code = L.accountCode || '—';
+      if (!byCode.has(code)) {
+        byCode.set(code, {
+          accountCode: code,
+          accountName: L.accountName || accountDisplayName(code),
+          debitTotal: 0,
+          creditTotal: 0,
+          drillDown: { lines: [] },
+        });
+      }
+      const bucket = byCode.get(code);
+      bucket.debitTotal += L.debit;
+      bucket.creditTotal += L.credit;
+      bucket.drillDown.lines.push({
+        transactionId: txId,
+        date: txDate,
+        description: txDesc,
+        type: txType,
+        category: txCategory,
+        debit: Number(Number(L.debit || 0).toFixed(2)),
+        credit: Number(Number(L.credit || 0).toFixed(2)),
+        lineDescription: L.description || '',
+      });
+    }
+  }
+
+  const accounts = [...byCode.values()]
+    .map((a) => ({
+      ...a,
+      debitTotal: Number(a.debitTotal.toFixed(2)),
+      creditTotal: Number(a.creditTotal.toFixed(2)),
+      net: Number((a.debitTotal - a.creditTotal).toFixed(2)),
+      lineCount: a.drillDown.lines.length,
+      drillDownUrl: `/api/finance/transactions?${baseQs}${baseQs ? '&' : ''}accountCode=${encodeURIComponent(a.accountCode)}`,
+    }))
+    .sort((x, y) => String(x.accountCode).localeCompare(String(y.accountCode)));
+
+  return accounts;
+}
 
 /** In-memory idempotency for POST /transactions (duplicate submits / Strict Mode) */
 const IDEMPOTENCY_WINDOW_MS = 10 * 60 * 1000;
@@ -135,20 +260,46 @@ async function leanTransactionWithBookingPreview(txId) {
 }
 
 const getTransactions = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 20 } = req.query;
-  const { skip, limit: lim } = getPagination(page, limit);
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const lim = Math.min(FINANCE_TX_MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const skip = (page - 1) * lim;
+
+  const startRaw = req.query.start || req.query.startDate;
+  const endRaw = req.query.end || req.query.endDate;
+  /** @type {Record<string, unknown>} */
+  const mongoMatch = {};
+  if (startRaw || endRaw) {
+    mongoMatch.date = {};
+    if (startRaw) mongoMatch.date.$gte = parseUtcStart(startRaw);
+    if (endRaw) mongoMatch.date.$lte = parseUtcEnd(endRaw);
+  }
+  if (req.query.type === 'income' || req.query.type === 'expense') {
+    mongoMatch.type = req.query.type;
+  }
+
+  const accountCodeFilter = req.query.accountCode
+    ? String(req.query.accountCode).trim()
+    : '';
+
   const includeLedger =
     String(req.query.includeLedger ?? '1').toLowerCase() !== '0' &&
     String(req.query.includeLedger ?? '').toLowerCase() !== 'false';
+  const includeByAccount =
+    String(req.query.includeByAccount ?? '1').toLowerCase() !== '0' &&
+    String(req.query.includeByAccount ?? '').toLowerCase() !== 'false';
   const collapseDupes = !(
     String(req.query.collapseDuplicates || '').toLowerCase() === '0' ||
     String(req.query.collapseDuplicates || '').toLowerCase() === 'false'
   );
-  const [raw, total] = await Promise.all([
-    Transaction.find()
+
+  let raw;
+  let total;
+  let accountFilterMeta = null;
+
+  if (accountCodeFilter) {
+    raw = await Transaction.find(mongoMatch)
       .sort({ date: -1 })
-      .skip(skip)
-      .limit(lim)
+      .limit(FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP)
       .populate({
         path: 'booking',
         populate: { path: 'roomId', select: 'name type' },
@@ -157,9 +308,34 @@ const getTransactions = asyncHandler(async (req, res) => {
         path: 'guestBooking',
         populate: { path: 'roomId', select: 'name type' },
       })
-      .lean(),
-    Transaction.countDocuments(),
-  ]);
+      .lean();
+    total = await Transaction.countDocuments(mongoMatch);
+    accountFilterMeta = {
+      mode: 'accountCode',
+      scanCap: FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP,
+      scanned: raw.length,
+      note:
+        'Rows are scanned newest-first up to scanCap, filtered by resolved GL lines (embedded, legacy journal, or inferred), then paginated.',
+    };
+  } else {
+    [raw, total] = await Promise.all([
+      Transaction.find(mongoMatch)
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(lim)
+        .populate({
+          path: 'booking',
+          populate: { path: 'roomId', select: 'name type' },
+        })
+        .populate({
+          path: 'guestBooking',
+          populate: { path: 'roomId', select: 'name type' },
+        })
+        .lean(),
+      Transaction.countDocuments(mongoMatch),
+    ]);
+  }
+
   let data = raw.map((tx) => {
     if (tx.booking) tx.booking = withRoomPreview(tx.booking);
     if (tx.guestBooking) tx.guestBooking = withRoomPreview(tx.guestBooking);
@@ -172,40 +348,80 @@ const getTransactions = asyncHandler(async (req, res) => {
     duplicateRowsCollapsed = before - data.length;
     data.sort((a, b) => new Date(b.date) - new Date(a.date));
   }
-  const withBalances = addRunningBalances(data);
+
+  let withLedger = includeLedger
+    ? await attachLedgerEntriesToTransactions(data)
+    : data.map((tx) => ({ ...tx, ledgerEntry: null }));
+
+  if (accountCodeFilter) {
+    withLedger = withLedger.filter((tx) =>
+      getLedgerStyleLinesForTransaction(tx).some((l) => String(l.accountCode) === accountCodeFilter),
+    );
+    const filteredTotal = withLedger.length;
+    withLedger = withLedger.slice(skip, skip + lim);
+    accountFilterMeta = {
+      ...accountFilterMeta,
+      matchingRows: filteredTotal,
+      totalRowsInPeriod: total,
+    };
+    total = filteredTotal;
+  }
+
+  const withBalances = addRunningBalances(withLedger);
   const totals = withBalances.reduce(
     (acc, tx) => {
       acc.debit += tx.debit || 0;
       acc.credit += tx.credit || 0;
       return acc;
     },
-    { debit: 0, credit: 0 }
+    { debit: 0, credit: 0 },
   );
   totals.net = Number((totals.credit - totals.debit).toFixed(2));
   totals.debit = Number(totals.debit.toFixed(2));
   totals.credit = Number(totals.credit.toFixed(2));
-  const listPayload = includeLedger
-    ? await attachLedgerEntriesToTransactions(withBalances)
-    : withBalances.map((tx) => ({ ...tx, ledgerEntry: null }));
+
+  const drillParams = new URLSearchParams();
+  if (startRaw) drillParams.set('start', String(startRaw).trim());
+  if (endRaw) drillParams.set('end', String(endRaw).trim());
+  if (req.query.type === 'income' || req.query.type === 'expense') drillParams.set('type', String(req.query.type));
+  drillParams.set('limit', String(Math.min(FINANCE_TX_MAX_LIMIT, 500)));
+
+  const byAccount = includeByAccount ? buildByAccountDrillDown(withBalances, drillParams.toString()) : [];
+
   res.json({
     success: true,
-    data: listPayload,
+    data: withBalances,
     meta: {
-      page: parseInt(page, 10),
+      apiPath: '/api/finance/transactions',
+      page,
       limit: lim,
       total,
       totals,
       duplicateRowsCollapsed,
       collapseDuplicates: collapseDupes,
       includeLedger,
+      includeByAccount,
+      dateRange:
+        startRaw || endRaw
+          ? {
+              start: startRaw ? parseUtcStart(startRaw).toISOString() : null,
+              end: endRaw ? parseUtcEnd(endRaw).toISOString() : null,
+            }
+          : null,
+      accountCodeFilter: accountCodeFilter || null,
+      accountFilter: accountFilterMeta,
+      byAccount,
     },
   });
 });
 
 const createTransaction = asyncHandler(async (req, res) => {
   const rawGb = req.body.guestBooking;
+  const rawBooking = req.body.booking;
   const guestBookingDedupeId =
     rawGb != null && /^[0-9a-fA-F]{24}$/.test(String(rawGb).trim()) ? String(rawGb).trim() : null;
+  const bookingDedupeId =
+    rawBooking != null && /^[0-9a-fA-F]{24}$/.test(String(rawBooking).trim()) ? String(rawBooking).trim() : null;
 
   const {
     journalEntryId: _ignoreJournal,
@@ -276,6 +492,31 @@ const createTransaction = asyncHandler(async (req, res) => {
 
     if (existing) {
       return { kind: 'ok', tx: existing, created: false };
+    }
+
+    // If payment already posted through /debtors/:id/payments, suppress follow-up manual row.
+    if (
+      norm.type === 'income' &&
+      ['booking', 'booking_payment'].includes(String(norm.category || '').toLowerCase()) &&
+      Number(norm.amount) > 0 &&
+      (guestBookingDedupeId || bookingDedupeId)
+    ) {
+      const paymentQuery = {
+        source: 'debtor_payment',
+        type: 'income',
+        amount: norm.amount,
+      };
+      if (guestBookingDedupeId) paymentQuery.guestBooking = guestBookingDedupeId;
+      if (bookingDedupeId) paymentQuery.booking = bookingDedupeId;
+      const existingPaymentTx = await Transaction.findOne(paymentQuery).sort({ createdAt: -1 }).exec();
+      if (existingPaymentTx) {
+        return {
+          kind: 'ok',
+          tx: existingPaymentTx,
+          created: false,
+          suppressReason: 'debtor_payment_already_posted',
+        };
+      }
     }
 
     if (
@@ -356,7 +597,9 @@ const createTransaction = asyncHandler(async (req, res) => {
       ? {}
       : {
           message:
-            'Same amount was already posted from a confirmed booking (Dr A/R, Cr revenue). This manual booking-income row was not created to avoid double-counting.',
+            suppressReason === 'debtor_payment_already_posted'
+              ? 'This payment was already posted via debtor payment (Dr Bank, Cr Accounts Receivable). Duplicate manual transaction was not created.'
+              : 'Same amount was already posted from a confirmed booking (Dr A/R, Cr revenue). This manual booking-income row was not created to avoid double-counting.',
         };
 
   res.status(201).json({
@@ -602,8 +845,80 @@ const getSalary = asyncHandler(async (req, res) => {
   res.json({ success: true, data, meta: { page: parseInt(page, 10), limit: lim, total } });
 });
 
+async function salaryExpenseDescription(salaryDoc) {
+  let who = (salaryDoc.payeeName && String(salaryDoc.payeeName).trim()) || '';
+  if (!who && salaryDoc.employee) {
+    const u = await User.findById(salaryDoc.employee).select('name').lean();
+    who = u?.name || 'Staff';
+  }
+  if (!who) who = 'Worker / payroll';
+  const m = salaryDoc.month ? ` · ${salaryDoc.month}` : '';
+  return `Salary — ${who}${m}`;
+}
+
 const createSalary = asyncHandler(async (req, res) => {
-  const salary = await Salary.create(req.body);
+  const body = { ...req.body };
+  const emp = body.employee;
+  if (emp === '' || emp === undefined || emp === null) {
+    delete body.employee;
+  } else if (!mongoose.Types.ObjectId.isValid(String(emp))) {
+    delete body.employee;
+  }
+
+  const amt = Number(body.amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    return res.status(400).json({ success: false, message: 'amount must be a positive number' });
+  }
+
+  const salary = await Salary.create(body);
+
+  let expenseTx = null;
+  const paidOn = salary.paidOn ? new Date(salary.paidOn) : null;
+
+  if (paidOn && amt > 0) {
+    const tx = await Transaction.create({
+      type: 'expense',
+      category: 'salary',
+      amount: amt,
+      date: paidOn,
+      description: await salaryExpenseDescription(salary),
+      reference: `SALARY:${String(salary._id)}`,
+      source: 'manual',
+      revenueRecognition: 'cash',
+      createdBy: req.user._id,
+    });
+    try {
+      const { entryId, lines, financialJournalEntryId } = await transactionJournalService.postJournalForTransaction(
+        tx,
+        req.user._id,
+      );
+      tx.journalEntryId = entryId;
+      tx.financialJournalEntryId = financialJournalEntryId;
+      tx.lines = lines;
+      await tx.save();
+      salary.expenseTransactionId = tx._id;
+      await salary.save();
+      expenseTx = tx;
+      await logAudit({
+        userId: req.user._id,
+        role: req.user.role,
+        action: 'create',
+        entity: 'Transaction',
+        entityId: tx._id,
+        after: tx.toObject(),
+        req,
+      });
+    } catch (err) {
+      await Transaction.findByIdAndDelete(tx._id);
+      await Salary.findByIdAndDelete(salary._id);
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'Could not post salary expense to the ledger',
+        hint: 'Ensure chart of accounts is seeded (e.g. npm run seed:chart-v3).',
+      });
+    }
+  }
+
   await logAudit({
     userId: req.user._id,
     role: req.user.role,
@@ -613,7 +928,21 @@ const createSalary = asyncHandler(async (req, res) => {
     after: salary.toObject(),
     req,
   });
-  res.status(201).json({ success: true, data: salary });
+
+  const data = await Salary.findById(salary._id).populate('employee', 'name email').lean();
+  const related = expenseTx ? { expenseTransaction: await leanTransactionWithBookingPreview(expenseTx._id) } : {};
+
+  res.status(201).json({
+    success: true,
+    data,
+    ...related,
+    meta: {
+      expenseTransactionCreated: !!expenseTx,
+      expenseTransactionNote: expenseTx
+        ? null
+        : 'Set paidOn to the payment date when recording a paid run to create the expense transaction and bank journal automatically.',
+    },
+  });
 });
 
 const getSalaryByEmployee = asyncHandler(async (req, res) => {

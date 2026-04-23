@@ -8,10 +8,33 @@ const ROOM_TYPES = [
   'garden-venue',
 ];
 
+const ROOM_TYPE_OPTIONS = [
+  'cottage',
+  'event-venue',
+  'lodge',
+  'farmhouse',
+  'suite',
+  'conference-venue',
+  'wedding-venue',
+  'other',
+];
+
+const SPACE_CATEGORY_OPTIONS = ['room', 'event-hire'];
+
 /** Accept common legacy/typo labels and normalize to canonical enum values. */
 const ROOM_TYPE_ALIASES = {
   'wedding-venue': 'event-venue',
   'gaeden-venue': 'garden-venue',
+};
+
+const ROOM_TYPE_OPTION_ALIASES = {
+  'event venue': 'event-venue',
+  'conference venue': 'conference-venue',
+  'wedding venue': 'wedding-venue',
+};
+
+const SPACE_CATEGORY_ALIASES = {
+  'event hire': 'event-hire',
 };
 
 const roomImageSchema = new mongoose.Schema(
@@ -30,6 +53,10 @@ const roomSchema = new mongoose.Schema(
     slug: { type: String, unique: true, sparse: true, trim: true, lowercase: true },
     description: { type: String, default: '' },
     type: { type: String, enum: ROOM_TYPES, required: true },
+    roomType: { type: String, enum: ROOM_TYPE_OPTIONS },
+    spaceCategory: { type: String, enum: SPACE_CATEGORY_OPTIONS },
+    beds: { type: Number, min: 0 },
+    bathrooms: { type: Number, min: 0 },
     capacity: { type: Number, min: 0 },
     pricePerNight: { type: Number, min: 0 },
     amenities: [{ type: String, trim: true }],
@@ -51,6 +78,14 @@ roomSchema.pre('validate', function (next) {
   if (this.type != null) {
     const rawType = String(this.type).trim().toLowerCase();
     this.type = ROOM_TYPE_ALIASES[rawType] || rawType;
+  }
+  if (this.roomType != null) {
+    const rawRoomType = String(this.roomType).trim().toLowerCase();
+    this.roomType = ROOM_TYPE_OPTION_ALIASES[rawRoomType] || rawRoomType.replace(/\s+/g, '-');
+  }
+  if (this.spaceCategory != null) {
+    const rawCategory = String(this.spaceCategory).trim().toLowerCase();
+    this.spaceCategory = SPACE_CATEGORY_ALIASES[rawCategory] || rawCategory.replace(/\s+/g, '-');
   }
   if (!Array.isArray(this.images)) {
     this.images = [];

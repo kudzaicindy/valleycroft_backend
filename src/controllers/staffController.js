@@ -2,6 +2,15 @@ const User = require('../models/User');
 const WorkLog = require('../models/WorkLog');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
+const EMPLOYEE_UPDATE_FIELDS = ['name', 'email', 'phone', 'idNumber', 'dateJoined', 'dateLeft', 'isActive'];
+
+function pickEmployeeUpdates(body = {}) {
+  const out = {};
+  for (const key of EMPLOYEE_UPDATE_FIELDS) {
+    if (body[key] !== undefined) out[key] = body[key];
+  }
+  return out;
+}
 // GET /employees — list all employees
 const getEmployees = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
@@ -23,7 +32,8 @@ const updateEmployee = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ success: false, message: 'Employee not found' });
   const before = user.toObject();
-  const { dateLeft, ...rest } = req.body;
+  const updates = pickEmployeeUpdates(req.body);
+  const { dateLeft, ...rest } = updates;
   if (dateLeft !== undefined) user.dateLeft = dateLeft;
   Object.assign(user, rest);
   await user.save();

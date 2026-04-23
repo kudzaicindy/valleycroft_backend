@@ -1,4 +1,5 @@
 const FinancialJournalEntry = require('../models/FinancialJournalEntry');
+const Account = require('../models/Account');
 const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
 const { round2 } = require('../utils/math');
 
@@ -247,6 +248,8 @@ function shapeCashFlowPresentationV3(cf) {
         standardHeading: 'Cash flows from operating activities',
         cashReceipts: cf.detail.operatingInflows.map(flowLine),
         cashPayments: cf.detail.operatingOutflows.map(flowLine),
+        cashReceiptsByAccount: cf.operatingBreakdown?.inflowsByAccount || [],
+        cashPaymentsByAccount: cf.operatingBreakdown?.outflowsByAccount || [],
         subtotal: cf.operating,
       },
       {
@@ -279,6 +282,223 @@ function shapeCashFlowPresentationV3(cf) {
   };
 }
 
+/** `CHART_OF_ACCOUNTS_V3` is keyed by numeric code → `{ name, accountType, note? }`. */
+function accountFromChartV3(code) {
+  const n = Number(String(code).trim());
+  if (!Number.isFinite(n)) return null;
+  const row = CHART_OF_ACCOUNTS_V3[n];
+  if (!row) return null;
+  return { code: String(n), name: row.name, accountType: row.accountType };
+}
+
+function pickCashLine1001(entries) {
+  return (entries || []).find((e) => String(e.accountCode) === '1001') || null;
+}
+
+/** For cash inflow (Dr cash), counterpart is usually a Cr line; for outflow, a Dr line. */
+function pickCounterpartEntry(entries, cashInflow) {
+  const others = (entries || []).filter((e) => String(e.accountCode) !== '1001');
+  if (!others.length) return null;
+  if (cashInflow) {
+    const pool = others.filter((e) => (Number(e.credit) || 0) > 0);
+    const use = pool.length ? pool : others;
+    return use.reduce((best, e) => {
+      const amt = Number(e.credit) || 0;
+      const bestAmt = best ? Number(best.credit) || 0 : 0;
+      return amt > bestAmt ? e : best;
+    }, null);
+  }
+  const pool = others.filter((e) => (Number(e.debit) || 0) > 0);
+  const use = pool.length ? pool : others;
+  return use.reduce((best, e) => {
+    const amt = Number(e.debit) || 0;
+    const bestAmt = best ? Number(best.debit) || 0 : 0;
+    return amt > bestAmt ? e : best;
+  }, null);
+}
+
+const BNB_CASH_TYPES = new Set([
+  'booking_payment',
+  'booking_deposit_received',
+  'booking_balance_received',
+]);
+
+/**
+ * UI-facing grouping for cash movements (underpins `plainLanguage.composition`).
+ * @param {string} transactionType
+ * @param {'in'|'out'} direction
+ */
+function plainLanguageBucket(transactionType, direction) {
+  const tt = String(transactionType || 'unknown');
+  if (BNB_CASH_TYPES.has(tt)) {
+    return {
+      key: 'bnb_guest_collections',
+      label:
+        'B&B guest stay cash (typically clears 1010; stay revenue is recognised on 4001 when the booking is confirmed)',
+    };
+  }
+  if (tt === 'owner_investment') {
+    return { key: 'owner_investment', label: 'Owner investment (cash to equity)' };
+  }
+  if (tt === 'owner_drawing') {
+    return { key: 'owner_drawings', label: 'Owner drawings (cash out)' };
+  }
+  if (tt === 'equipment_purchase') {
+    return { key: 'investing_equipment', label: 'Equipment / asset purchases' };
+  }
+  const verb = direction === 'in' ? 'Cash in' : 'Cash out';
+  return {
+    key: `journal_${tt}`,
+    label: `${verb}: ${tt.replace(/_/g, ' ')}`,
+  };
+}
+
+function aggregatePlainComposition(movements) {
+  /** @param {'in'|'out'} dir */
+  const fold = (dir) => {
+    const map = new Map();
+    for (const m of movements) {
+      if (m.direction !== dir) continue;
+      const k = m.bucket.key;
+      const row = map.get(k) || { key: k, label: m.bucket.label, total: 0, movementCount: 0 };
+      row.total += m.amount;
+      row.movementCount += 1;
+      map.set(k, row);
+    }
+    return [...map.values()]
+      .map((r) => ({ ...r, total: round2(r.total) }))
+      .sort((a, b) => b.total - a.total);
+  };
+  return { cashIn: fold('in'), cashOut: fold('out') };
+}
+
+function monthlyPlainCashTotals(movements) {
+  const map = new Map();
+  for (const m of movements) {
+    const d = new Date(m.date);
+    const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const row = map.get(ym) || { month: ym, totalCashIn: 0, totalCashOut: 0 };
+    if (m.direction === 'in') row.totalCashIn += m.amount;
+    else row.totalCashOut += m.amount;
+    map.set(ym, row);
+  }
+  return [...map.values()]
+    .map((r) => ({
+      month: r.month,
+      totalCashIn: round2(r.totalCashIn),
+      totalCashOut: round2(r.totalCashOut),
+      net: round2(r.totalCashIn - r.totalCashOut),
+    }))
+    .sort((a, b) => b.month.localeCompare(a.month));
+}
+
+function buildPlainLanguageCashMovements(journalRows) {
+  const revenue4001 = accountFromChartV3('4001');
+  const movements = [];
+  for (const je of journalRows) {
+    const cashLine = pickCashLine1001(je.entries);
+    if (!cashLine) continue;
+    const debit = Number(cashLine.debit) || 0;
+    const credit = Number(cashLine.credit) || 0;
+    if (debit <= 0 && credit <= 0) continue;
+    const direction = debit > 0 ? 'in' : 'out';
+    const amount = round2(debit > 0 ? debit : credit);
+    const counterpart = pickCounterpartEntry(je.entries, direction === 'in');
+    const tt = String(je.transactionType || 'unknown');
+    const glCounterpart = counterpart
+      ? {
+          accountCode: String(counterpart.accountCode),
+          accountName:
+            counterpart.accountName ||
+            accountFromChartV3(String(counterpart.accountCode))?.name ||
+            '',
+          accountType: counterpart.accountType,
+        }
+      : null;
+
+    let headline = '';
+    let detail = '';
+    let glNote = '';
+    let story = null;
+
+    if (BNB_CASH_TYPES.has(tt)) {
+      headline =
+        tt === 'booking_payment'
+          ? 'Cash received for a guest stay'
+          : tt === 'booking_deposit_received'
+            ? 'Cash: booking deposit received'
+            : 'Cash: final balance received';
+      detail =
+        'Cash went up. This is usually paired with reducing what the guest owed you (receivable), not with recognising new room revenue in this same journal.';
+      if (glCounterpart?.accountCode === '1010') {
+        glNote =
+          'You see Accounts receivable (1010) here because the payment clears the guest balance. The stay revenue is BnB Revenue (4001) when the booking is recognised.';
+      }
+      story = {
+        kind: 'bnb_stay_payment',
+        revenueYouEarnFromStays: {
+          accountCode: '4001',
+          accountName: revenue4001?.name || 'BnB Revenue',
+        },
+        whatThisJournalShows: 'Cash in the bank from the guest; receivable goes down.',
+      };
+    } else if (tt === 'owner_investment') {
+      headline = 'Cash in from owner investment';
+      detail = 'Owner contributed capital; cash increases with the matching equity line.';
+    } else if (tt === 'owner_drawing') {
+      headline = 'Cash out — owner drawing';
+      detail = 'Owner took funds out of the business.';
+    } else {
+      headline = `${direction === 'in' ? 'Cash received' : 'Cash paid'} (${tt.replace(/_/g, ' ')})`;
+      detail = je.description || '';
+    }
+
+    const bucket = plainLanguageBucket(tt, direction);
+
+    movements.push({
+      journalEntryId: String(je._id),
+      date: je.date,
+      direction,
+      amount,
+      transactionType: tt,
+      bucket,
+      headline,
+      detail,
+      glNote,
+      cashAccount: {
+        accountCode: '1001',
+        accountName: accountFromChartV3('1001')?.name || 'Cash / Bank',
+      },
+      glCounterpart,
+      /** When present, the P&L line this stay cash relates to (revenue is recognised there, not on the cash receipt). */
+      relatedRevenueAccount:
+        BNB_CASH_TYPES.has(tt) && revenue4001
+          ? { accountCode: revenue4001.code, accountName: revenue4001.name }
+          : BNB_CASH_TYPES.has(tt)
+            ? { accountCode: '4001', accountName: 'BnB Revenue' }
+            : null,
+      story,
+      description: je.description || '',
+    });
+  }
+  movements.sort((a, b) => new Date(b.date) - new Date(a.date));
+  return movements;
+}
+
+function summarizePlainCashMovements(movements) {
+  let inSum = 0;
+  let outSum = 0;
+  for (const m of movements) {
+    if (m.direction === 'in') inSum += m.amount;
+    else outSum += m.amount;
+  }
+  return {
+    totalCashIn: round2(inSum),
+    totalCashOut: round2(outSum),
+    net: round2(inSum - outSum),
+  };
+}
+
 async function getCashFlowV3(startDate, endDate) {
   const start = new Date(startDate);
   const end = parseDateEndOfDay(endDate);
@@ -295,6 +515,7 @@ async function getCashFlowV3(startDate, endDate) {
     { $match: { 'entries.accountCode': '1001' } },
     {
       $project: {
+        journalEntryId: '$_id',
         side: { $cond: [{ $gt: ['$entries.debit', 0] }, 'DR', 'CR'] },
         amount: {
           $cond: [{ $gt: ['$entries.debit', 0] }, '$entries.debit', '$entries.credit'],
@@ -338,6 +559,111 @@ async function getCashFlowV3(startDate, endDate) {
   const fin = net(financing);
   const netCashMovement = round2(op.net + inv.net + fin.net);
 
+  const counterpartAccountBreakdown = await FinancialJournalEntry.aggregate([
+    {
+      $match: {
+        date: { $gte: start, $lte: end },
+        isVoided: false,
+        ...JOURNAL_HAS_ENTRIES,
+      },
+    },
+    {
+      $project: {
+        date: 1,
+        transactionType: 1,
+        entries: 1,
+      },
+    },
+    {
+      $addFields: {
+        cashDebit: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: '$entries',
+                  as: 'e',
+                  cond: { $eq: ['$$e.accountCode', '1001'] },
+                },
+              },
+              as: 'c',
+              in: { $ifNull: ['$$c.debit', 0] },
+            },
+          },
+        },
+        cashCredit: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: '$entries',
+                  as: 'e',
+                  cond: { $eq: ['$$e.accountCode', '1001'] },
+                },
+              },
+              as: 'c',
+              in: { $ifNull: ['$$c.credit', 0] },
+            },
+          },
+        },
+      },
+    },
+    { $match: { $or: [{ cashDebit: { $gt: 0 } }, { cashCredit: { $gt: 0 } }] } },
+    { $unwind: '$entries' },
+    { $match: { 'entries.accountCode': { $ne: '1001' } } },
+    {
+      $addFields: {
+        flowDirection: {
+          $cond: [{ $gt: ['$cashDebit', 0] }, 'inflow', 'outflow'],
+        },
+        counterpartAmount: {
+          $cond: [
+            { $gt: ['$cashDebit', 0] },
+            { $ifNull: ['$entries.credit', 0] },
+            { $ifNull: ['$entries.debit', 0] },
+          ],
+        },
+      },
+    },
+    { $match: { counterpartAmount: { $gt: 0 } } },
+    {
+      $group: {
+        _id: {
+          flowDirection: '$flowDirection',
+          accountCode: '$entries.accountCode',
+          accountName: '$entries.accountName',
+          accountType: '$entries.accountType',
+        },
+        amount: { $sum: '$counterpartAmount' },
+      },
+    },
+    { $sort: { '_id.flowDirection': 1, '_id.accountCode': 1 } },
+  ]);
+
+  const inflowsByAccount = [];
+  const outflowsByAccount = [];
+  for (const row of counterpartAccountBreakdown) {
+    const entry = {
+      accountCode: row._id.accountCode,
+      accountName: row._id.accountName,
+      accountType: row._id.accountType,
+      amount: round2(row.amount),
+    };
+    if (row._id.flowDirection === 'inflow') inflowsByAccount.push(entry);
+    else outflowsByAccount.push(entry);
+  }
+
+  const inflowByType = operating.inflows.reduce((acc, l) => {
+    const k = String(l.transactionType || 'unknown');
+    acc[k] = round2((acc[k] || 0) + (Number(l.amount) || 0));
+    return acc;
+  }, {});
+  const bnbCashReceived = round2(
+    (inflowByType.booking_payment || 0) +
+      (inflowByType.booking_deposit_received || 0) +
+      (inflowByType.booking_balance_received || 0)
+  );
+
   const dayBeforeStart = new Date(start);
   dayBeforeStart.setUTCDate(dayBeforeStart.getUTCDate() - 1);
   const openingBs = await getBalanceSheetV3(dayBeforeStart);
@@ -366,6 +692,12 @@ async function getCashFlowV3(startDate, endDate) {
       financingOutflows: financing.outflows,
     },
     period: { startDate: start, endDate: end },
+    operatingBreakdown: {
+      inflowsByTransactionType: inflowByType,
+      bnbCashReceived,
+      inflowsByAccount,
+      outflowsByAccount,
+    },
   };
 
   const plSamePeriod = await getIncomeStatementV3(start, end);
@@ -376,9 +708,39 @@ async function getCashFlowV3(startDate, endDate) {
   const accounting = accountingDisclosureCashFlow(core, plSamePeriod.netProfitBeforeTax, deltaAr);
   const presentation = shapeCashFlowPresentationV3(core);
 
+  const journalDocsForPlain = await FinancialJournalEntry.find({
+    date: { $gte: start, $lte: end },
+    isVoided: false,
+    ...JOURNAL_HAS_ENTRIES,
+    'entries.accountCode': '1001',
+  })
+    .sort({ date: -1 })
+    .lean();
+
+  const movementsPlain = buildPlainLanguageCashMovements(journalDocsForPlain);
+  const composition = aggregatePlainComposition(movementsPlain);
+  const plainLanguage = {
+    basis:
+      'Posted v3 journals on cash/bank 1001. Composition groups are plain-language labels; GL counterpart lines stay in each movement for audit.',
+    summary: summarizePlainCashMovements(movementsPlain),
+    composition: {
+      /** What total cash in is made of (same totals as summary.totalCashIn when all journals hit 1001). */
+      cashIn: composition.cashIn,
+      /** What total cash out is made of. */
+      cashOut: composition.cashOut,
+    },
+    byMonth: monthlyPlainCashTotals(movementsPlain),
+    movements: movementsPlain,
+    buckets: {
+      cashIn: movementsPlain.filter((m) => m.direction === 'in'),
+      cashOut: movementsPlain.filter((m) => m.direction === 'out'),
+    },
+  };
+
   return {
     accounting,
-    presentation,
+    presentation: { ...presentation, plainLanguage },
+    plainLanguage,
     ...core,
   };
 }
@@ -435,6 +797,12 @@ async function getBalanceSheetV3(asAtInput) {
     { $sort: { accountCode: 1 } },
   ]);
 
+  const codes = Array.from(new Set(lines.map((l) => String(l.accountCode))));
+  const accountDocs = await Account.find({ code: { $in: codes } })
+    .select('code subType')
+    .lean();
+  const subTypeByCode = new Map(accountDocs.map((a) => [String(a.code), a.subType || null]));
+
   const assets = [];
   const liabilities = [];
   const equity = [];
@@ -444,6 +812,7 @@ async function getBalanceSheetV3(asAtInput) {
       accountCode: l.accountCode,
       accountName: l.accountName,
       accountType: l.accountType,
+      subType: subTypeByCode.get(String(l.accountCode)) || null,
       balance: round2(l.balance),
     };
     if (l.accountType === 'asset') assets.push(row);
@@ -470,6 +839,7 @@ async function getBalanceSheetV3(asAtInput) {
         accountCode: '3003',
         accountName: reName,
         accountType: 'equity',
+        subType: 'RETAINED_EARNINGS',
         balance: cumulativeNI,
         includesUnclosedProfitAndLoss: true,
       });
@@ -514,6 +884,7 @@ function shapeBalanceSheetPresentationV3(d) {
   const line = (r) => ({
     accountCode: r.accountCode,
     accountName: r.accountName,
+    subType: r.subType || null,
     balance: r.balance,
     ...(r.includesUnclosedProfitAndLoss ? { includesUnclosedProfitAndLoss: true } : {}),
   });

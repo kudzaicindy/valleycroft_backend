@@ -1,4 +1,5 @@
 const GuestBooking = require('../models/GuestBooking');
+const Booking = require('../models/Booking');
 const Room = require('../models/Room');
 
 /**
@@ -12,15 +13,26 @@ const Room = require('../models/Room');
 async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBookingId = null) {
   const start = new Date(checkIn);
   const end = new Date(checkOut);
-  const query = {
+  const guestQuery = {
     roomId,
     status: { $nin: ['cancelled'] },
     checkIn: { $lt: end },
     checkOut: { $gt: start },
   };
-  if (excludeGuestBookingId) query._id = { $ne: excludeGuestBookingId };
-  const overlapping = await GuestBooking.findOne(query).lean();
-  return !overlapping;
+  if (excludeGuestBookingId) guestQuery._id = { $ne: excludeGuestBookingId };
+  const internalQuery = {
+    roomId,
+    status: { $nin: ['cancelled'] },
+    $or: [
+      { checkIn: { $lt: end }, checkOut: { $gt: start } },
+      { eventDate: { $gte: start, $lte: end } },
+    ],
+  };
+  const [overlappingGuest, overlappingInternal] = await Promise.all([
+    GuestBooking.findOne(guestQuery).lean(),
+    Booking.findOne(internalQuery).lean(),
+  ]);
+  return !overlappingGuest && !overlappingInternal;
 }
 
 /**
@@ -30,7 +42,7 @@ async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBo
 async function getBookingsForRoomInRange(roomId, checkIn, checkOut) {
   const start = new Date(checkIn);
   const end = new Date(checkOut);
-  const [room, bookings] = await Promise.all([
+  const [room, guestBookings, internalBookings] = await Promise.all([
     Room.findById(roomId).lean().select('name type'),
     GuestBooking.find({
       roomId,
@@ -39,11 +51,24 @@ async function getBookingsForRoomInRange(roomId, checkIn, checkOut) {
       checkOut: { $gt: start },
     })
       .lean()
-      .select('guestName guestEmail guestPhone checkIn checkOut status trackingCode'),
+      .select('checkIn checkOut status trackingCode'),
+    Booking.find({
+      roomId,
+      status: { $nin: ['cancelled'] },
+      $or: [
+        { checkIn: { $lt: end }, checkOut: { $gt: start } },
+        { eventDate: { $gte: start, $lte: end } },
+      ],
+    })
+      .lean()
+      .select('type checkIn checkOut eventDate status'),
   ]);
   const roomName = room?.name;
   const roomType = room?.type;
-  return bookings.map((b) => ({ ...b, roomName, roomType }));
+  return [
+    ...guestBookings.map((b) => ({ ...b, bookingSource: 'guest', roomName, roomType })),
+    ...internalBookings.map((b) => ({ ...b, bookingSource: 'internal', roomName, roomType })),
+  ];
 }
 
 module.exports = { isRoomAvailableForDates, getBookingsForRoomInRange };

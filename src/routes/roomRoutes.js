@@ -24,7 +24,7 @@ router.get('/gallery/landing', getLandingGallery);
 router.get('/manage', ...roomManage, getRoomsManage);
 router.get('/by-slug/:slug', getRoomBySlug);
 router.get('/', getRooms);
-router.get('/:id/bookings', getRoomBookings);
+router.get('/:id/bookings', protect, authorize('finance', 'admin', 'ceo'), getRoomBookings);
 router.get('/:id', getRoomById);
 
 // Admin / CEO

@@ -6,6 +6,7 @@ const compression = require('compression');
 require('dotenv').config();
 
 const connectDB = require('./src/config/db');
+const { redirectPreservePath } = require('./src/utils/canonicalApiRedirect');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -61,6 +62,27 @@ app.use('/api/audit', require('./src/routes/auditRoutes'));
 app.use('/api/emails', require('./src/routes/emailRoutes'));
 app.use('/api/accounting', require('./src/routes/accountingRoutes'));
 app.use('/api/accounting/v3', require('./src/routes/financialGlV3Routes'));
+
+// Admin namespace — non-finance mounts stay here. Finance dashboards must use canonical paths below (never /api/admin/finance|debtors|…).
+app.use('/api/admin/auth', require('./src/routes/authRoutes'));
+app.use('/api/admin/bookings', require('./src/routes/bookingRoutes'));
+app.use('/api/admin/guest-bookings', require('./src/routes/guestBookingRoutes'));
+app.use('/api/admin/rooms', require('./src/routes/roomRoutes'));
+app.use('/api/admin/staff', require('./src/routes/staffRoutes'));
+app.use('/api/admin/inventory', require('./src/routes/inventoryRoutes'));
+app.use('/api/admin/reports', require('./src/routes/reportRoutes'));
+app.use('/api/admin/audit', require('./src/routes/auditRoutes'));
+app.use('/api/admin/emails', require('./src/routes/emailRoutes'));
+
+/** Finance & ledger UIs: redirect /api/admin/* → canonical APIs (308, path + query preserved). */
+app.use('/api/admin/accounting/v3', redirectPreservePath('/api/admin/accounting/v3', '/api/accounting/v3'));
+app.use('/api/admin/accounting', redirectPreservePath('/api/admin/accounting', '/api/accounting'));
+app.use('/api/admin/finance', redirectPreservePath('/api/admin/finance', '/api/finance'));
+app.use('/api/admin/statements', redirectPreservePath('/api/admin/statements', '/api/statements'));
+app.use('/api/admin/debtors', redirectPreservePath('/api/admin/debtors', '/api/finance/debtors'));
+app.use('/api/admin/suppliers', redirectPreservePath('/api/admin/suppliers', '/api/finance/suppliers'));
+app.use('/api/admin/invoices', redirectPreservePath('/api/admin/invoices', '/api/finance/invoices'));
+app.use('/api/admin/refunds', redirectPreservePath('/api/admin/refunds', '/api/finance/refunds'));
 
 // Health check — critical for Render keepalive
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

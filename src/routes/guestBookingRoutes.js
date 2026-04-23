@@ -5,6 +5,7 @@ const {
   trackBooking,
   getAllGuestBookings,
   updateGuestBooking,
+  deleteGuestBooking,
 } = require('../controllers/guestBookingController');
 
 const router = express.Router();
@@ -16,5 +17,6 @@ router.get('/track', trackBooking);
 // Admin, CEO, Finance (read)
 router.get('/', protect, authorize('admin', 'ceo', 'finance'), getAllGuestBookings);
 router.put('/:id', protect, authorize('admin'), updateGuestBooking);
+router.delete('/:id', protect, authorize('admin'), deleteGuestBooking);
 
 module.exports = router;

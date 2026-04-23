@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const Counter = require('./Counter');
 
 const lineItemSchema = new mongoose.Schema({
   description: String,
@@ -29,10 +30,12 @@ const invoiceSchema = new mongoose.Schema({
 invoiceSchema.pre('save', async function (next) {
   if (this.isNew && !this.invoiceNumber) {
     const year = new Date().getFullYear();
-    const count = await this.constructor.countDocuments({
-      invoiceNumber: new RegExp(`^INV-${year}-`),
-    });
-    this.invoiceNumber = `INV-${year}-${String(count + 1).padStart(4, '0')}`;
+    const counter = await Counter.findOneAndUpdate(
+      { _id: `invoice:${year}` },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    ).lean();
+    this.invoiceNumber = `INV-${year}-${String(counter.seq).padStart(4, '0')}`;
   }
   next();
 });

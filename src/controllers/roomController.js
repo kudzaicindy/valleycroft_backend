@@ -11,6 +11,10 @@ const ROOM_FIELDS = [
   'name',
   'description',
   'type',
+  'roomType',
+  'spaceCategory',
+  'beds',
+  'bathrooms',
   'capacity',
   'pricePerNight',
   'amenities',
@@ -40,7 +44,7 @@ function s3Configured() {
 }
 
 const publicSelect =
-  'name slug description type capacity pricePerNight amenities images order featuredOnLanding landingOrder isAvailable _id createdAt updatedAt';
+  'name slug description type roomType spaceCategory beds bathrooms capacity pricePerNight amenities images order featuredOnLanding landingOrder isAvailable _id createdAt updatedAt';
 
 // Public: landing / marketing gallery — rooms flagged for homepage carousel
 const getLandingGallery = asyncHandler(async (req, res) => {
@@ -50,7 +54,7 @@ const getLandingGallery = asyncHandler(async (req, res) => {
   })
     .sort({ landingOrder: 1, order: 1, name: 1 })
     .lean()
-    .select('name slug description type images landingOrder order pricePerNight capacity');
+    .select('name slug description type roomType spaceCategory beds bathrooms images landingOrder order pricePerNight capacity');
   res.json({ success: true, data: rooms });
 });
 
@@ -122,22 +126,43 @@ const getRoomBookings = asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id).lean();
   if (!room) return res.status(404).json({ success: false, message: 'Room not found' });
   const { checkIn, checkOut } = req.query;
-  let query = { roomId: req.params.id, status: { $nin: ['cancelled'] } };
+  const guestQuery = { roomId: req.params.id, status: { $nin: ['cancelled'] } };
+  const internalQuery = { roomId: req.params.id, status: { $nin: ['cancelled'] } };
   if (checkIn && checkOut) {
     const start = new Date(checkIn);
     const end = new Date(checkOut);
-    query.checkIn = { $lt: end };
-    query.checkOut = { $gt: start };
+    guestQuery.checkIn = { $lt: end };
+    guestQuery.checkOut = { $gt: start };
+    internalQuery.checkIn = { $lt: end };
+    internalQuery.checkOut = { $gt: start };
   }
-  const bookings = await GuestBooking.find(query)
-    .sort({ checkIn: 1 })
-    .lean()
-    .select('guestName guestEmail guestPhone checkIn checkOut status trackingCode totalAmount deposit');
-  const data = bookings.map((b) => ({
+  const [guestBookings, internalBookings] = await Promise.all([
+    GuestBooking.find(guestQuery)
+      .sort({ checkIn: 1 })
+      .lean()
+      .select('guestName guestEmail guestPhone checkIn checkOut status trackingCode totalAmount deposit'),
+    Booking.find(internalQuery)
+      .sort({ checkIn: 1 })
+      .lean()
+      .select('guestName guestEmail guestPhone type checkIn checkOut eventDate status amount deposit'),
+  ]);
+  const guestRows = guestBookings.map((b) => ({
     ...b,
+    bookingSource: 'guest',
+    bookingAmount: b.totalAmount ?? 0,
     roomName: room.name,
     roomType: room.type,
   }));
+  const internalRows = internalBookings.map((b) => ({
+    ...b,
+    bookingSource: 'internal',
+    bookingAmount: b.amount ?? 0,
+    roomName: room.name,
+    roomType: room.type,
+  }));
+  const data = [...guestRows, ...internalRows].sort(
+    (a, b) => new Date(a.checkIn || a.eventDate || 0) - new Date(b.checkIn || b.eventDate || 0)
+  );
   res.json({ success: true, data });
 });
 

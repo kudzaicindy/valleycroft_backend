@@ -5,6 +5,65 @@ const { withRoomPreviewMany, withRoomPreview } = require('../utils/bookingPrevie
 const bookingRevenueService = require('../services/bookingRevenueService');
 const { scheduleInternalBookingCreatedAdmin } = require('../services/invoiceNotifyService');
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^\+?[0-9\s\-()]{7,20}$/;
+const BOOKING_UPDATE_FIELDS = [
+  'guestName',
+  'guestEmail',
+  'guestPhone',
+  'type',
+  'roomId',
+  'checkIn',
+  'checkOut',
+  'eventDate',
+  'amount',
+  'deposit',
+  'status',
+  'notes',
+];
+
+function pickAllowedBookingUpdates(body = {}) {
+  const out = {};
+  for (const key of BOOKING_UPDATE_FIELDS) {
+    if (body[key] !== undefined) out[key] = body[key];
+  }
+  return out;
+}
+
+function isValidDateInput(v) {
+  if (v == null || v === '') return false;
+  const d = new Date(v);
+  return !Number.isNaN(d.getTime());
+}
+
+function validateBookingPayload(payload) {
+  if (payload.guestEmail != null && payload.guestEmail !== '') {
+    const email = String(payload.guestEmail).trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) return 'Invalid guestEmail format';
+    payload.guestEmail = email;
+  }
+  if (payload.guestPhone != null && payload.guestPhone !== '') {
+    const phone = String(payload.guestPhone).trim();
+    if (!PHONE_RE.test(phone)) return 'Invalid guestPhone format';
+    payload.guestPhone = phone;
+  }
+
+  const type = String(payload.type || '').toLowerCase();
+  if (type === 'bnb') {
+    if (!isValidDateInput(payload.checkIn) || !isValidDateInput(payload.checkOut)) {
+      return 'checkIn and checkOut are required valid dates for bnb bookings';
+    }
+    const inDate = new Date(payload.checkIn);
+    const outDate = new Date(payload.checkOut);
+    if (outDate <= inDate) return 'checkOut must be after checkIn';
+  } else if (type === 'event') {
+    if (!isValidDateInput(payload.eventDate)) {
+      return 'eventDate is required and must be a valid date for event bookings';
+    }
+  }
+  return null;
+}
+
 const list = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
   const { skip, limit: lim } = getPagination(page, limit);
@@ -49,7 +108,13 @@ const getOne = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const booking = await Booking.create({ ...req.body, createdBy: req.user._id });
+  const payload = { ...req.body };
+  const payloadError = validateBookingPayload(payload);
+  if (payloadError) {
+    return res.status(400).json({ success: false, message: payloadError });
+  }
+
+  const booking = await Booking.create({ ...payload, createdBy: req.user._id });
   if (booking.status === 'confirmed') {
     try {
       await bookingRevenueService.onInternalBookingConfirmed(booking, req.user._id);
@@ -81,7 +146,13 @@ const update = asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
   const before = booking.toObject();
-  Object.assign(booking, req.body);
+  const updates = pickAllowedBookingUpdates(req.body);
+  const merged = { ...before, ...updates };
+  const payloadError = validateBookingPayload(merged);
+  if (payloadError) {
+    return res.status(400).json({ success: false, message: payloadError });
+  }
+  Object.assign(booking, updates);
   await booking.save();
 
   const becameConfirmed = before.status !== 'confirmed' && booking.status === 'confirmed';

@@ -1,11 +1,9 @@
 /**
- * Maps legacy Transaction (income/expense + category) to double-entry journal lines.
+ * Maps Transaction (income/expense + category) to v3 double-entry journal lines.
  * Cash side defaults to Cash / Bank (1001) per Chynae v3.0. Run `npm run seed:chart-v3` first.
- * Also mirrors the same economics into v3 `financial_journal_entries` / `financial_transaction_lines`
- * so published statements (`basis: double_entry_v3`) include manual finance transactions.
+ * Source of truth is v3 `financial_journal_entries`.
  */
 const Account = require('../models/Account');
-const ledgerService = require('./ledgerService');
 const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
 const { createFinancialJournalEntry } = require('../utils/financialJournal');
 const financialGlPostingService = require('./financialGlPostingService');
@@ -152,8 +150,8 @@ async function resolveLinesFromSpecs(lineSpecs) {
 }
 
 /**
- * Post AUTO journal for a saved transaction document.
- * @returns {Promise<{ entryId: import('mongoose').Types.ObjectId, lines: object[], financialJournalEntryId?: import('mongoose').Types.ObjectId }>}
+ * Post v3 AUTO journal for a saved transaction document.
+ * @returns {Promise<{ lines: object[], financialJournalEntryId?: import('mongoose').Types.ObjectId }>}
  */
 async function postJournalForTransaction(tx, userId) {
   if (tx.financialJournalEntryId) {
@@ -164,44 +162,29 @@ async function postJournalForTransaction(tx, userId) {
   const lineSpecs = buildLines(tx);
   const entryDate = tx.date ? new Date(tx.date) : new Date();
   const resolvedLines = await resolveLinesFromSpecs(lineSpecs);
-  const { entryId } = await ledgerService.postEntry({
-    entryDate,
-    reference: `TX:${tx._id}`,
-    description: `[AUTO] Transaction ${tx._id} — ${tx.type} / ${tx.category || 'general'}`,
-    entryType: 'AUTO',
-    lines: lineSpecs,
-    createdBy: userId,
-  });
 
   let financialJournalEntryId;
-  try {
-    const v3Lines = await buildV3LinesFromSpecs(lineSpecs);
-    const je = await createFinancialJournalEntry(
-      {
-        transactionType: v3TransactionTypeForManual(tx),
-        date: entryDate,
-        description: `[AUTO] Transaction ${tx._id} — ${tx.type} / ${tx.category || 'general'}`,
-        reference: `TX:${tx._id}`,
-        createdBy: userId,
-      },
-      v3Lines
-    );
-    financialJournalEntryId = je._id;
-  } catch (v3Err) {
-    try {
-      await ledgerService.voidEntry(entryId.toString(), 'v3 mirror failed — rolling back legacy AUTO entry', userId);
-    } catch (voidErr) {
-      console.error('[transactionJournal] Legacy rollback after v3 failure failed:', voidErr.message);
-    }
-    throw v3Err;
-  }
+  const v3Lines = await buildV3LinesFromSpecs(lineSpecs);
+  const je = await createFinancialJournalEntry(
+    {
+      transactionType: v3TransactionTypeForManual(tx),
+      date: entryDate,
+      description: `[AUTO] Transaction ${tx._id} — ${tx.type} / ${tx.category || 'general'}`,
+      reference: `TX:${tx._id}`,
+      createdBy: userId,
+    },
+    v3Lines
+  );
+  financialJournalEntryId = je._id;
 
-  return { entryId, lines: resolvedLines, financialJournalEntryId };
+  return { lines: resolvedLines, financialJournalEntryId };
 }
 
 async function voidJournalLinkedToTransaction(tx, userId, reason) {
-  if (!tx.journalEntryId) return;
-  await ledgerService.voidEntry(tx.journalEntryId.toString(), reason, userId);
+  // Legacy journal collection is no longer used as source of truth.
+  void tx;
+  void userId;
+  void reason;
 }
 
 async function voidFinancialJournalLinkedToTransaction(tx, userId, reason) {
