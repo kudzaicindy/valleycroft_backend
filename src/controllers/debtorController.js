@@ -282,6 +282,12 @@ const create = asyncHandler(async (req, res) => {
 const update = asyncHandler(async (req, res) => {
   const debtor = await Debtor.findById(req.params.id);
   if (!debtor) return res.status(404).json({ success: false, message: 'Debtor not found' });
+  if (req.body.amountPaid !== undefined) {
+    return res.status(400).json({
+      success: false,
+      message: 'Use POST /api/finance/debtors/:id/payments to record payment and create transaction entries',
+    });
+  }
   const before = debtor.toObject();
   Object.assign(debtor, pickDebtorUpdates(req.body));
   await debtor.save();

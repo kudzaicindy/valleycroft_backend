@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { TRANSACTION_TYPES_V3 } = require('../constants/chartOfAccountsV3');
 const { round2 } = require('../utils/math');
+const Counter = require('./Counter');
 
 const journalEntryLineSchema = new mongoose.Schema(
   {
@@ -105,13 +106,28 @@ financialJournalEntrySchema.pre('save', async function (next) {
   try {
     const year = new Date(this.date || Date.now()).getFullYear();
     const prefix = `JE-${year}-`;
-    const count = await this.constructor.countDocuments({
-      journalId: new RegExp(`^${prefix}`),
-    });
-    this.journalId = `${prefix}${String(count + 1).padStart(4, '0')}`;
-    next();
+    const counterId = `financial_journal:${year}`;
+    const session = this.$session ? this.$session() : null;
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const counter = await Counter.findOneAndUpdate(
+        { _id: counterId },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true, ...(session ? { session } : {}) }
+      ).lean();
+      const seq = Number(counter?.seq) || 1;
+      const candidate = `${prefix}${String(seq).padStart(4, '0')}`;
+      const exists = await this.constructor.exists({
+        journalId: candidate,
+        _id: { $ne: this._id },
+      });
+      if (!exists) {
+        this.journalId = candidate;
+        return next();
+      }
+    }
+    return next(new Error(`Could not allocate unique journalId for year ${year}`));
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 
