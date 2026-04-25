@@ -397,4 +397,15 @@ const sendEmail = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { to, messageId: info.messageId } });
 });
 
-module.exports = { list, create, update, remove, getPdf, sendEmail };
+module.exports = {
+  list,
+  create,
+  update,
+  remove,
+  getPdf,
+  sendEmail,
+  buildQuotationPdfBuffer,
+  mailConfigured,
+  getTransporter,
+  getMailFrom,
+};

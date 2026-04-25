@@ -26,10 +26,27 @@ const ROOM_FIELDS = [
   'slug',
 ];
 
+function normalizeAmenitiesInput(value) {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const raw = item.name ?? item.label ?? '';
+        return String(raw).trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+}
+
 function pickRoomPayload(body) {
   const out = {};
   for (const k of ROOM_FIELDS) {
     if (body[k] !== undefined) out[k] = body[k];
+  }
+  if (out.amenities !== undefined) {
+    out.amenities = normalizeAmenitiesInput(out.amenities);
   }
   return out;
 }
@@ -131,6 +148,15 @@ const getLandingGallery = asyncHandler(async (req, res) => {
 // Admin / CEO: all rooms (including unavailable) for back-office UI
 const getRoomsManage = asyncHandler(async (req, res) => {
   const rooms = await Room.find({}).sort({ order: 1, name: 1 }).lean().select(publicSelect);
+  res.json({ success: true, data: rooms.map((room) => withNormalizedRoomImages(room, req)) });
+});
+
+// Public: room media catalogue (all rooms, read-only) for websites/landing usage.
+const getRoomsPublicMedia = asyncHandler(async (req, res) => {
+  const rooms = await Room.find({})
+    .sort({ order: 1, name: 1 })
+    .lean()
+    .select('name slug type roomType spaceCategory images isAvailable order _id');
   res.json({ success: true, data: rooms.map((room) => withNormalizedRoomImages(room, req)) });
 });
 
@@ -398,6 +424,7 @@ const deleteRoom = asyncHandler(async (req, res) => {
 module.exports = {
   getRooms,
   getRoomsManage,
+  getRoomsPublicMedia,
   getLandingGallery,
   getRoomById,
   getRoomBySlug,

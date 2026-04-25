@@ -173,7 +173,214 @@ function inUtcRange(dateValue, startUtc, endUtc) {
   return t >= startUtc.getTime() && t <= endUtc.getTime();
 }
 
-async function buildOperationsDashboard(now) {
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function collapseTransactionDuplicateRows(rows) {
+  const byKey = new Map();
+  for (const tx of rows || []) {
+    const d = tx.date ? new Date(tx.date).toISOString().slice(0, 10) : '';
+    const key = [
+      d,
+      tx.type,
+      String(tx.category || '').toLowerCase(),
+      String(tx.description || '').trim().toLowerCase(),
+      Number(tx.amount),
+      String(tx.createdBy || ''),
+    ].join('\t');
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, tx);
+      continue;
+    }
+    const prevJ = !!prev.journalEntryId;
+    const curJ = !!tx.journalEntryId;
+    if (curJ && !prevJ) {
+      byKey.set(key, tx);
+      continue;
+    }
+    if (curJ === prevJ) {
+      const pt = new Date(prev.updatedAt || prev.createdAt || 0).getTime();
+      const ct = new Date(tx.updatedAt || tx.createdAt || 0).getTime();
+      if (ct >= pt) byKey.set(key, tx);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function normalizeDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function recognizedTransactionAmount(tx, start, end) {
+  const amount = Number(tx?.amount || 0);
+  if (!Number.isFinite(amount) || amount === 0) return 0;
+  const category = String(tx?.category || '').toLowerCase();
+  const booking = tx?.booking || null;
+  const guestBooking = tx?.guestBooking || null;
+
+  if (category === 'booking') {
+    const checkIn = booking?.checkIn || guestBooking?.checkIn;
+    if (!checkIn) return 0;
+    const ci = normalizeDay(checkIn);
+    const ps = normalizeDay(start);
+    const pe = normalizeDay(end);
+    return ci >= ps && ci <= pe ? amount : 0;
+  }
+  if (category === 'event') {
+    const eventDate = booking?.eventDate ? new Date(booking.eventDate) : null;
+    if (eventDate && !Number.isNaN(eventDate.getTime())) {
+      return eventDate >= new Date(start) && eventDate <= new Date(end) ? amount : 0;
+    }
+  }
+
+  const txDate = new Date(tx?.date);
+  return txDate >= new Date(start) && txDate <= new Date(end) ? amount : 0;
+}
+
+async function recognizedRevenueBreakdown(start, end) {
+  const rows = await Transaction.find({
+    type: 'income',
+    category: { $in: ['booking', 'event'] },
+    $or: [{ date: { $gte: new Date(start), $lte: new Date(end) } }, { category: { $in: ['booking', 'event'] } }],
+  })
+    .select('type category amount date description createdBy journalEntryId createdAt updatedAt booking guestBooking')
+    .populate('booking', 'checkIn eventDate')
+    .populate('guestBooking', 'checkIn')
+    .lean();
+
+  const deduped = collapseTransactionDuplicateRows(rows);
+  let bookingRevenue = 0;
+  let eventRevenue = 0;
+  for (const tx of deduped) {
+    const recognized = recognizedTransactionAmount(tx, start, end);
+    if (!recognized) continue;
+    const category = String(tx.category || '').toLowerCase();
+    if (category === 'booking') bookingRevenue += recognized;
+    else if (category === 'event') eventRevenue += recognized;
+  }
+  return {
+    bookingRevenue: round2(bookingRevenue),
+    eventRevenue: round2(eventRevenue),
+    totalRevenue: round2(bookingRevenue + eventRevenue),
+  };
+}
+
+function overlapSoldNights(checkIn, checkOut, start, end) {
+  if (!checkIn || !checkOut) return 0;
+  const stayStart = utcStartOfDay(new Date(checkIn));
+  const stayEnd = utcStartOfDay(new Date(checkOut));
+  const rangeStart = utcStartOfDay(new Date(start));
+  const rangeEndExclusive = new Date(utcStartOfDay(new Date(end)).getTime() + MS_PER_DAY);
+  const overlapStart = Math.max(stayStart.getTime(), rangeStart.getTime());
+  const overlapEnd = Math.min(stayEnd.getTime(), rangeEndExclusive.getTime());
+  if (overlapEnd <= overlapStart) return 0;
+  return Math.floor((overlapEnd - overlapStart) / MS_PER_DAY);
+}
+
+async function buildMonthlyRoomOccupancy(monthSpecs) {
+  if (!Array.isArray(monthSpecs) || monthSpecs.length === 0) return { windowMonths: 0, months: [], byRoom: [] };
+
+  const first = monthSpecs[0];
+  const last = monthSpecs[monthSpecs.length - 1];
+  const { start: windowStart } = monthBounds(first.ty, first.tm);
+  const { end: windowEnd } = monthBounds(last.ty, last.tm);
+
+  const [rooms, internalBookings, guestBookings] = await Promise.all([
+    Room.find().select('_id name type').sort({ name: 1 }).lean(),
+    Booking.find({
+      status: { $nin: ['cancelled'] },
+      roomId: { $ne: null },
+      checkIn: { $lte: windowEnd },
+      checkOut: { $gte: windowStart },
+    })
+      .select('roomId checkIn checkOut')
+      .lean(),
+    GuestBooking.find({
+      status: { $nin: ['cancelled'] },
+      roomId: { $ne: null },
+      checkIn: { $lte: windowEnd },
+      checkOut: { $gte: windowStart },
+    })
+      .select('roomId checkIn checkOut')
+      .lean(),
+  ]);
+
+  const bookingsByRoom = new Map();
+  for (const row of [...internalBookings, ...guestBookings]) {
+    const roomId = String(row.roomId || '');
+    if (!roomId) continue;
+    if (!bookingsByRoom.has(roomId)) bookingsByRoom.set(roomId, []);
+    bookingsByRoom.get(roomId).push(row);
+  }
+
+  const months = monthSpecs.map(({ ty, tm }) => {
+    const { start, end } = monthBounds(ty, tm);
+    const daysInMonth = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+    return {
+      key: `${ty}-${String(tm + 1).padStart(2, '0')}`,
+      label: new Date(Date.UTC(ty, tm, 1)).toLocaleString('en-ZA', { month: 'short' }),
+      start,
+      end,
+      daysInMonth,
+    };
+  });
+
+  const byRoom = rooms.map((room) => {
+    const roomId = String(room._id);
+    const roomBookings = bookingsByRoom.get(roomId) || [];
+    const series = months.map((month) => {
+      const soldNights = roomBookings.reduce(
+        (sum, b) => sum + overlapSoldNights(b.checkIn, b.checkOut, month.start, month.end),
+        0
+      );
+      const occupancyPct = month.daysInMonth > 0 ? round2((soldNights / month.daysInMonth) * 100) : 0;
+      return {
+        key: month.key,
+        soldNights,
+        availableNights: month.daysInMonth,
+        occupancyPct,
+      };
+    });
+    return {
+      roomId,
+      roomName: room.name || '—',
+      roomType: room.type || null,
+      monthly: series,
+      averageOccupancyPct:
+        series.length > 0 ? round2(series.reduce((s, x) => s + x.occupancyPct, 0) / series.length) : 0,
+    };
+  });
+
+  const overallByMonth = months.map((month) => {
+    const totals = byRoom.reduce(
+      (acc, room) => {
+        const point = room.monthly.find((x) => x.key === month.key);
+        acc.soldNights += Number(point?.soldNights || 0);
+        acc.availableNights += Number(point?.availableNights || 0);
+        return acc;
+      },
+      { soldNights: 0, availableNights: 0 }
+    );
+    return {
+      key: month.key,
+      label: month.label,
+      soldNights: totals.soldNights,
+      availableNights: totals.availableNights,
+      occupancyPct: totals.availableNights > 0 ? round2((totals.soldNights / totals.availableNights) * 100) : 0,
+    };
+  });
+
+  return {
+    windowMonths: months.length,
+    months: months.map(({ key, label }) => ({ key, label })),
+    byRoom,
+    overallByMonth,
+  };
+}
+
+async function buildOperationsDashboard(now, monthSpecs = []) {
   const todayStart = utcStartOfDay(now);
   const todayEnd = utcEndOfDay(now);
 
@@ -374,6 +581,11 @@ async function buildOperationsDashboard(now) {
   const occupiedRoomsCount = occupiedRooms.size;
   const vacantRoomsCount = Math.max(0, roomCounts.totalRooms - occupiedRoomsCount - roomCounts.maintenanceRooms);
   const occupancyPct = roomCounts.totalRooms > 0 ? round2((occupiedRoomsCount / roomCounts.totalRooms) * 100) : 0;
+  const monthlyRoomOccupancy = await buildMonthlyRoomOccupancy(monthSpecs);
+  const selectedMonthOverall =
+    Array.isArray(monthlyRoomOccupancy.overallByMonth) && monthlyRoomOccupancy.overallByMonth.length > 0
+      ? monthlyRoomOccupancy.overallByMonth[monthlyRoomOccupancy.overallByMonth.length - 1]
+      : null;
 
   return {
     title: 'Operations dashboard',
@@ -410,6 +622,9 @@ async function buildOperationsDashboard(now) {
       vacantRooms: vacantRoomsCount,
       maintenanceRooms: roomCounts.maintenanceRooms,
       occupancyPct,
+      occupancyPctToday: occupancyPct,
+      selectedMonthOccupancyPct: Number(selectedMonthOverall?.occupancyPct || 0),
+      monthlyByRoom: monthlyRoomOccupancy,
     },
     movementsToday,
   };
@@ -455,18 +670,8 @@ async function sumIncome(start, end) {
 
 /** Revenue used by finance dashboard cards: recognized booking + event income only. */
 async function sumRevenue(start, end) {
-  const [r] = await Transaction.aggregate([
-    {
-      $match: {
-        type: 'income',
-        category: { $in: ['booking', 'event'] },
-        source: { $in: ['booking_confirm', 'guest_booking_confirm'] },
-        date: { $gte: start, $lte: end },
-      },
-    },
-    { $group: { _id: null, t: { $sum: '$amount' } } },
-  ]);
-  return r?.t || 0;
+  const recognized = await recognizedRevenueBreakdown(start, end);
+  return recognized.totalRevenue;
 }
 
 /** Cash inflow (money received): income transactions recognised on cash basis only. */
@@ -888,8 +1093,7 @@ const getDashboard = asyncHandler(async (req, res) => {
     incomeFullMonth,
     refundsFullMonth,
     expenseFullMonth,
-    bookingRev,
-    eventRev,
+    recognizedRev,
     aging,
     payables,
     invoiceRows,
@@ -912,28 +1116,7 @@ const getDashboard = asyncHandler(async (req, res) => {
     sumIncome(monthStart, monthEnd),
     sumRefunds(monthStart, monthEnd),
     sumExpenseOps(monthStart, monthEnd),
-    Transaction.aggregate([
-      {
-        $match: {
-          type: 'income',
-          category: 'booking',
-          source: { $in: ['booking_confirm', 'guest_booking_confirm'] },
-          date: { $gte: monthStart, $lte: monthEnd },
-        },
-      },
-      { $group: { _id: null, t: { $sum: '$amount' } } },
-    ]),
-    Transaction.aggregate([
-      {
-        $match: {
-          type: 'income',
-          category: 'event',
-          source: 'booking_confirm',
-          date: { $gte: monthStart, $lte: monthEnd },
-        },
-      },
-      { $group: { _id: null, t: { $sum: '$amount' } } },
-    ]),
+    recognizedRevenueBreakdown(monthStart, monthEnd),
     debtorAging(),
     supplierPayablesSnapshot(),
     invoicesDueAndRecent(20),
@@ -1024,8 +1207,8 @@ const getDashboard = asyncHandler(async (req, res) => {
   });
 
   const netMtd = round2(collectionsMtd - refundsMtd - expenseMtd);
-  const bookingTotal = round2(bookingRev[0]?.t || 0);
-  const eventTotal = round2(eventRev[0]?.t || 0);
+  const bookingTotal = round2(recognizedRev?.bookingRevenue || 0);
+  const eventTotal = round2(recognizedRev?.eventRevenue || 0);
   const bookingsNoteParts = [];
   if (bookingTotal > 0) bookingsNoteParts.push(`BnB ${bookingTotal}`);
   if (eventTotal > 0) bookingsNoteParts.push(`events ${eventTotal}`);
@@ -1079,7 +1262,7 @@ const getDashboard = asyncHandler(async (req, res) => {
     revenueChartOptions: { allowedMonths: [6, 12], activeMonths: revenueWindow },
   };
 
-  const operationsDashboard = await buildOperationsDashboard(now);
+  const operationsDashboard = await buildOperationsDashboard(now, monthSpecs);
 
   const kpis = {
     currency: 'ZAR',

@@ -59,6 +59,7 @@ app.use('/api/debtors', require('./src/routes/debtorRoutes'));
 app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
 app.use('/api/invoices', require('./src/routes/invoiceRoutes'));
 app.use('/api/quotations', require('./src/routes/quotationRoutes'));
+app.use('/api/enquiries', require('./src/routes/enquiryRoutes'));
 app.use('/api/refunds', require('./src/routes/refundRoutes'));
 app.use('/api/audit', require('./src/routes/auditRoutes'));
 app.use('/api/emails', require('./src/routes/emailRoutes'));
@@ -75,6 +76,7 @@ app.use('/api/admin/inventory', require('./src/routes/inventoryRoutes'));
 app.use('/api/admin/reports', require('./src/routes/reportRoutes'));
 app.use('/api/admin/audit', require('./src/routes/auditRoutes'));
 app.use('/api/admin/emails', require('./src/routes/emailRoutes'));
+app.use('/api/admin/enquiries', require('./src/routes/enquiryRoutes'));
 
 /** Finance & ledger UIs: redirect /api/admin/* → canonical APIs (308, path + query preserved). */
 app.use('/api/admin/accounting/v3', redirectPreservePath('/api/admin/accounting/v3', '/api/accounting/v3'));

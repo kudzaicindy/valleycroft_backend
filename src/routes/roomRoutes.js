@@ -4,6 +4,7 @@ const { upload } = require('../middleware/upload');
 const {
   getRooms,
   getRoomsManage,
+  getRoomsPublicMedia,
   getLandingGallery,
   getRoomById,
   getRoomBySlug,
@@ -21,6 +22,7 @@ const roomManage = [protect, authorize('admin', 'ceo')];
 
 // Public — static paths before /:id
 router.get('/gallery/landing', getLandingGallery);
+router.get('/public/media', getRoomsPublicMedia);
 router.get('/manage', ...roomManage, getRoomsManage);
 router.get('/by-slug/:slug', getRoomBySlug);
 router.get('/', getRooms);
