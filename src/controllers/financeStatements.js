@@ -2,6 +2,7 @@
 // Mount via financeRoutes.js and /api/statements/*.
 
 const FinancialJournalEntry = require('../models/FinancialJournalEntry');
+const Transaction = require('../models/Transaction');
 const {
   getIncomeStatementV3,
   getCashFlowV3,
@@ -112,6 +113,176 @@ async function pagedEntryLines({ match, lineMatch = {}, page, limit, skip }) {
   return { data, meta: { page, limit, total: countRows[0]?.n || 0 } };
 }
 
+function titleCaseCategory(category) {
+  const s = String(category || 'uncategorized').trim();
+  if (!s) return 'Uncategorized';
+  return s
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/** Keep same duplicate-collapse behavior as /api/finance/transactions. */
+function collapseTransactionDuplicateRows(rows) {
+  const byKey = new Map();
+  for (const tx of rows || []) {
+    const d = tx.date ? new Date(tx.date).toISOString().slice(0, 10) : '';
+    const key = [
+      d,
+      tx.type,
+      String(tx.category || '').toLowerCase(),
+      String(tx.description || '').trim().toLowerCase(),
+      Number(tx.amount),
+      String(tx.createdBy || ''),
+    ].join('\t');
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, tx);
+      continue;
+    }
+    const prevJ = !!prev.journalEntryId;
+    const curJ = !!tx.journalEntryId;
+    if (curJ && !prevJ) {
+      byKey.set(key, tx);
+      continue;
+    }
+    if (curJ === prevJ) {
+      const pt = new Date(prev.updatedAt || prev.createdAt || 0).getTime();
+      const ct = new Date(tx.updatedAt || tx.createdAt || 0).getTime();
+      if (ct >= pt) byKey.set(key, tx);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+async function getIncomeStatementFromTransactions(startDate, endDate) {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const rows = await Transaction.find({
+    $or: [
+      { date: { $gte: start, $lte: end } },
+      { type: 'income', category: { $in: ['booking', 'event'] } },
+    ],
+  })
+    .select('type category amount date description createdBy journalEntryId createdAt updatedAt booking guestBooking')
+    .populate('booking', 'checkIn checkOut eventDate type')
+    .populate('guestBooking', 'checkIn checkOut')
+    .lean();
+  const groupedRows = collapseTransactionDuplicateRows(rows);
+
+  let bnbRevenue = 0;
+  let eventRevenue = 0;
+  let otherIncome = 0;
+  let refunds = 0;
+  const operatingExpenses = {};
+
+  const asDayStartUtc = (d) => {
+    const x = new Date(d);
+    x.setUTCHours(0, 0, 0, 0);
+    return x;
+  };
+
+  const checkInWithinPeriod = (checkIn, periodStart, periodEnd) => {
+    if (!checkIn) return false;
+    const ci = asDayStartUtc(checkIn);
+    const ps = asDayStartUtc(periodStart);
+    const pe = asDayStartUtc(periodEnd);
+    return ci >= ps && ci <= pe;
+  };
+
+  const amountRecognizedByStayWindow = (tx) => {
+    const amount = Number(tx.amount || 0);
+    if (!Number.isFinite(amount) || amount === 0) return 0;
+
+    const category = String(tx.category || '').toLowerCase();
+    const b = tx.booking || null;
+    const g = tx.guestBooking || null;
+
+    // Event revenue: recognize on event date.
+    if (category === 'event') {
+      const eventDate = b?.eventDate ? new Date(b.eventDate) : null;
+      if (eventDate && !Number.isNaN(eventDate.getTime())) {
+        return eventDate >= start && eventDate <= end ? amount : 0;
+      }
+      return tx.date >= start && tx.date <= end ? amount : 0;
+    }
+
+    // BnB revenue: include full transaction amount in the period of check-in.
+    if (category === 'booking') {
+      const checkIn = b?.checkIn || g?.checkIn;
+      if (checkIn) {
+        return checkInWithinPeriod(checkIn, start, end) ? amount : 0;
+      }
+      const effectiveDate = checkIn ? new Date(checkIn) : new Date(tx.date);
+      return effectiveDate >= start && effectiveDate <= end ? amount : 0;
+    }
+
+    return tx.date >= start && tx.date <= end ? amount : 0;
+  };
+
+  for (const row of groupedRows) {
+    const type = String(row.type || '').toLowerCase();
+    const category = String(row.category || '').toLowerCase();
+    const total = amountRecognizedByStayWindow(row);
+
+    if (type === 'income') {
+      if (category === 'booking') bnbRevenue += total;
+      else if (category === 'booking_payment') {
+        // Cash collection against receivables is not revenue for income statement presentation.
+      }
+      else if (category === 'event') eventRevenue += total;
+      else otherIncome += total;
+      continue;
+    }
+
+    if (type === 'expense') {
+      if (category === 'refund') {
+        refunds += total;
+      } else {
+        const label = titleCaseCategory(category);
+        operatingExpenses[label] = Number((operatingExpenses[label] || 0) + total);
+      }
+    }
+  }
+
+  const grossRevenue = bnbRevenue + eventRevenue + otherIncome;
+  const netRevenue = grossRevenue - refunds;
+  const totalOperatingExpenses = Object.values(operatingExpenses).reduce((s, v) => s + Number(v || 0), 0);
+  const grossProfit = netRevenue;
+  const netProfitBeforeTax = grossProfit - totalOperatingExpenses;
+
+  return {
+    revenue: {
+      bnbRevenue,
+      eventRevenue,
+      otherIncome,
+      grossRevenue,
+      refunds,
+      netRevenue,
+    },
+    costOfSales: 0,
+    costOfSalesByCode: {},
+    grossProfit,
+    operatingExpenses,
+    operatingExpensesByCode: {},
+    totalOperatingExpenses,
+    netProfitBeforeTax,
+    period: { startDate: start, endDate: end },
+  };
+}
+
+function stripNetFieldsFromIncomePayload(node) {
+  if (Array.isArray(node)) return node.map(stripNetFieldsFromIncomePayload);
+  if (!node || typeof node !== 'object') return node;
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k === 'netRevenue' || k === 'netProfitBeforeTax') continue;
+    out[k] = stripNetFieldsFromIncomePayload(v);
+  }
+  return out;
+}
+
 // ─── INCOME STATEMENT (§6.1 / §7) ──────────────────────────────────────────
 exports.getIncomeStatement = async (req, res) => {
   try {
@@ -124,15 +295,20 @@ exports.getIncomeStatement = async (req, res) => {
     priorStart.setUTCHours(0, 0, 0, 0);
 
     const [current, prior] = await Promise.all([
-      getIncomeStatementV3(start, end),
-      getIncomeStatementV3(priorStart, priorEnd),
+      getIncomeStatementFromTransactions(start, end),
+      getIncomeStatementFromTransactions(priorStart, priorEnd),
     ]);
 
-    res.json({
+    const payload = {
       success: true,
-      basis: 'double_entry_v3',
+      basis: 'transactions',
       data: {
-        accounting: accountingDisclosureIncomeStatement(current.period),
+        accounting: {
+          ...accountingDisclosureIncomeStatement(current.period),
+          recognitionBasis: 'Transactions',
+          description:
+            'Revenue and expenses are aggregated from transactions in the selected period. Booking payment collections (A/R settlements) are excluded from revenue.',
+        },
         current: {
           presentation: shapeIncomeStatementPresentationV7(current),
           ...current,
@@ -142,7 +318,9 @@ exports.getIncomeStatement = async (req, res) => {
           ...prior,
         },
       },
-    });
+    };
+
+    res.json(stripNetFieldsFromIncomePayload(payload));
   } catch (err) {
     console.error('Income statement error:', err);
     res.status(500).json({ success: false, message: err.message || 'Failed to generate income statement' });
@@ -209,17 +387,23 @@ exports.getCashFlow = async (req, res) => {
 exports.getPL = async (req, res) => {
   try {
     const { start, end } = parseDates(req.query);
-    const current = await getIncomeStatementV3(start, end);
+    const current = await getIncomeStatementFromTransactions(start, end);
 
-    res.json({
+    const payload = {
       success: true,
-      basis: 'double_entry_v3',
+      basis: 'transactions',
       data: {
-        accounting: accountingDisclosureIncomeStatement(current.period),
+        accounting: {
+          ...accountingDisclosureIncomeStatement(current.period),
+          recognitionBasis: 'Transactions',
+          description:
+            'Revenue and expenses are aggregated from transactions in the selected period. Booking payment collections (A/R settlements) are excluded from revenue.',
+        },
         presentation: shapeIncomeStatementPresentationV7(current),
         ...current,
       },
-    });
+    };
+    res.json(stripNetFieldsFromIncomePayload(payload));
   } catch (err) {
     console.error('P&L error:', err);
     res.status(500).json({ success: false, message: err.message || 'Failed to generate P&L statement' });

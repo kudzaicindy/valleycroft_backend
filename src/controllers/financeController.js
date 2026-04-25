@@ -240,6 +240,21 @@ function addRunningBalances(rows) {
   });
 }
 
+function utcStartOfDay(d) {
+  const x = new Date(d);
+  x.setUTCHours(0, 0, 0, 0);
+  return x;
+}
+
+function bookingCheckInWithinPeriod(tx, periodStart, periodEnd) {
+  const checkIn = tx?.booking?.checkIn || tx?.guestBooking?.checkIn;
+  if (!checkIn) return false;
+  const ci = utcStartOfDay(checkIn);
+  const ps = utcStartOfDay(periodStart);
+  const pe = utcStartOfDay(periodEnd);
+  return ci >= ps && ci <= pe;
+}
+
 async function leanTransactionWithBookingPreview(txId) {
   const doc = await Transaction.findById(txId)
     .populate({
@@ -266,9 +281,14 @@ const getTransactions = asyncHandler(async (req, res) => {
 
   const startRaw = req.query.start || req.query.startDate;
   const endRaw = req.query.end || req.query.endDate;
+  const accountCodeFilter = req.query.accountCode
+    ? String(req.query.accountCode).trim()
+    : '';
   /** @type {Record<string, unknown>} */
   const mongoMatch = {};
-  if (startRaw || endRaw) {
+  const stayDateMode4001 = Boolean((startRaw || endRaw) && accountCodeFilter === '4001');
+
+  if ((startRaw || endRaw) && !stayDateMode4001) {
     mongoMatch.date = {};
     if (startRaw) mongoMatch.date.$gte = parseUtcStart(startRaw);
     if (endRaw) mongoMatch.date.$lte = parseUtcEnd(endRaw);
@@ -276,10 +296,6 @@ const getTransactions = asyncHandler(async (req, res) => {
   if (req.query.type === 'income' || req.query.type === 'expense') {
     mongoMatch.type = req.query.type;
   }
-
-  const accountCodeFilter = req.query.accountCode
-    ? String(req.query.accountCode).trim()
-    : '';
 
   const includeLedger =
     String(req.query.includeLedger ?? '1').toLowerCase() !== '0' &&
@@ -352,6 +368,17 @@ const getTransactions = asyncHandler(async (req, res) => {
   let withLedger = includeLedger
     ? await attachLedgerEntriesToTransactions(data)
     : data.map((tx) => ({ ...tx, ledgerEntry: null }));
+
+  if (stayDateMode4001 && (startRaw || endRaw)) {
+    const periodStart = startRaw ? parseUtcStart(startRaw) : new Date('1970-01-01T00:00:00.000Z');
+    const periodEnd = endRaw ? parseUtcEnd(endRaw) : new Date('2999-12-31T23:59:59.999Z');
+    withLedger = withLedger.filter((tx) => {
+      const isBookingRevenue =
+        tx.type === 'income' && String(tx.category || '').toLowerCase() === 'booking';
+      if (!isBookingRevenue) return true;
+      return bookingCheckInWithinPeriod(tx, periodStart, periodEnd);
+    });
+  }
 
   if (accountCodeFilter) {
     withLedger = withLedger.filter((tx) =>

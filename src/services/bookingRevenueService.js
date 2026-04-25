@@ -14,6 +14,14 @@ const guestReceivableAccountService = require('./guestReceivableAccountService')
 const bookingInvoiceService = require('./bookingInvoiceService');
 const { scheduleInvoiceDelivery } = require('./invoiceNotifyService');
 
+function bookingRecognitionDate(doc) {
+  const eventDate = doc?.eventDate ? new Date(doc.eventDate) : null;
+  const checkIn = doc?.checkIn ? new Date(doc.checkIn) : null;
+  const preferred = eventDate || checkIn;
+  if (preferred && !Number.isNaN(preferred.getTime())) return preferred;
+  return new Date();
+}
+
 async function voidInvoiceLinkedToBooking(bookingDoc) {
   let invId = bookingDoc.invoiceId;
   if (!invId && bookingDoc.debtorId) {
@@ -67,6 +75,7 @@ async function onGuestBookingConfirmed(gb, userId) {
   if (total <= 0) return { skipped: true, reason: 'no_amount' };
 
   const deposit = Math.min(Number(gb.deposit) || 0, total);
+  const recognitionDate = bookingRecognitionDate(gb);
 
   const arAcc = await guestReceivableAccountService.ensureControlAccountsReceivable(userId);
   gb.receivableAccountId = arAcc._id;
@@ -89,7 +98,7 @@ async function onGuestBookingConfirmed(gb, userId) {
     type: 'income',
     category: 'booking',
     amount: total,
-    date: new Date(),
+    date: recognitionDate,
     description: `Confirmed guest booking — ${gb.guestName} (${gb.trackingCode})`,
     reference: gb.trackingCode,
     guestBooking: gb._id,
@@ -100,7 +109,7 @@ async function onGuestBookingConfirmed(gb, userId) {
   });
 
   try {
-    const je = await financialGlPostingService.postGuestBookingRevenueV3(gb, userId);
+    const je = await financialGlPostingService.postGuestBookingRevenueV3(gb, userId, { journalDate: recognitionDate });
     tx.financialJournalEntryId = je._id;
     await tx.save();
   } catch (err) {
@@ -163,6 +172,7 @@ async function onInternalBookingConfirmed(b, userId) {
 
   const deposit = Math.min(Number(b.deposit) || 0, total);
   const category = b.type === 'event' ? 'event' : 'booking';
+  const recognitionDate = bookingRecognitionDate(b);
 
   const arAcc = await guestReceivableAccountService.ensureControlAccountsReceivable(userId);
   b.receivableAccountId = arAcc._id;
@@ -185,7 +195,7 @@ async function onInternalBookingConfirmed(b, userId) {
     type: 'income',
     category,
     amount: total,
-    date: new Date(),
+    date: recognitionDate,
     description: `Confirmed booking — ${b.guestName} (${b.type})`,
     booking: b._id,
     source: 'booking_confirm',
@@ -195,7 +205,7 @@ async function onInternalBookingConfirmed(b, userId) {
   });
 
   try {
-    const je = await financialGlPostingService.postInternalBookingRevenueV3(b, userId);
+    const je = await financialGlPostingService.postInternalBookingRevenueV3(b, userId, { journalDate: recognitionDate });
     tx.financialJournalEntryId = je._id;
     await tx.save();
   } catch (err) {

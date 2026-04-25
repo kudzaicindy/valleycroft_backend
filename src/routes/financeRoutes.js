@@ -9,6 +9,7 @@ const supplierRoutes = require('./supplierRoutes');
 const invoiceRoutes = require('./invoiceRoutes');
 const refundRoutes = require('./refundRoutes');
 const expenseRoutes = require('./expenseRoutes');
+const reportRoutes = require('./reportRoutes');
 
 const router = express.Router();
 router.use(protect);
@@ -38,5 +39,8 @@ router.get('/salary', authorize('finance', 'admin', 'ceo'), financeController.ge
 router.post('/salary', authorize('finance', 'admin'), financeController.createSalary);
 router.delete('/salary/:id', authorize('finance', 'admin'), financeController.deleteSalary);
 router.get('/salary/employee/:id', authorize('finance', 'admin'), financeController.getSalaryByEmployee);
+
+/** Period & AI reports — same handlers as `/api/reports/*` (admin, finance, ceo). */
+router.use('/reports', reportRoutes);
 
 module.exports = router;
