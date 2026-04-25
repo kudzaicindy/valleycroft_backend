@@ -278,11 +278,13 @@ async function reverseGuestBookingRevenue(gb, userId) {
   await voidInvoiceLinkedToBooking(gb);
   await tx.deleteOne();
   if (gb.debtorId) {
+    const currentDebtor = await Debtor.findById(gb.debtorId).select('amountPaid').lean();
+    const preservedPaid = Number(currentDebtor?.amountPaid) || 0;
     await Debtor.findByIdAndUpdate(gb.debtorId, {
-      status: 'written-off',
+      status: preservedPaid > 0 ? 'paid' : 'written-off',
       amountOwed: 0,
-      amountPaid: 0,
-      notes: 'Closed — guest booking cancelled',
+      amountPaid: preservedPaid,
+      notes: 'Closed — guest booking cancelled (revenue reversed, payment retained)',
     });
   }
   gb.revenueTransactionId = undefined;
@@ -318,11 +320,13 @@ async function reverseInternalBookingRevenue(b, userId) {
   await voidInvoiceLinkedToBooking(b);
   await tx.deleteOne();
   if (b.debtorId) {
+    const currentDebtor = await Debtor.findById(b.debtorId).select('amountPaid').lean();
+    const preservedPaid = Number(currentDebtor?.amountPaid) || 0;
     await Debtor.findByIdAndUpdate(b.debtorId, {
-      status: 'written-off',
+      status: preservedPaid > 0 ? 'paid' : 'written-off',
       amountOwed: 0,
-      amountPaid: 0,
-      notes: 'Closed — booking cancelled',
+      amountPaid: preservedPaid,
+      notes: 'Closed — booking cancelled (revenue reversed, payment retained)',
     });
   }
   b.revenueTransactionId = undefined;
