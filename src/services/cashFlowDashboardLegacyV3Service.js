@@ -62,6 +62,7 @@ const INVESTING_TYPES = new Set(['equipment_purchase']);
 const FINANCING_TYPES = new Set(['owner_investment', 'owner_drawing']);
 
 const CASH_ACCOUNT_CODES = ['1001', '1002'];
+const REFUND_CODES = new Set(['4010']);
 
 function accountFromChart(code) {
   const n = Number(String(code).trim());
@@ -231,6 +232,19 @@ function buildExpenseBreakdownFromLines(lines) {
   return map;
 }
 
+function withAccountNamesByCode(codeTotals = {}) {
+  const named = {};
+  for (const [code, amount] of Object.entries(codeTotals || {})) {
+    const meta = accountFromChart(code);
+    named[code] = {
+      accountCode: String(code),
+      accountName: meta?.name || String(code),
+      amount: round2(Number(amount) || 0),
+    };
+  }
+  return named;
+}
+
 function buildIncomeBreakdownFromBuckets(buckets, incomeTxByBucket) {
   const out = {};
   for (const k of INCOME_BUCKET_KEYS) {
@@ -290,6 +304,11 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
         total: 0,
         transactions: [],
         ...Object.fromEntries(EXPENSE_TEMPLATE_ZERO_KEYS.map((k) => [k, 0])),
+      },
+      refunds: {
+        total: 0,
+        transactions: [],
+        by_account: {},
       },
       investing_activities: { inflows: 0, outflows: 0, net: 0, breakdown: {} },
       financing_activities: { inflows: 0, outflows: 0, net: 0, breakdown: {} },
@@ -368,14 +387,19 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
         allPaymentRows.push(txRow);
       } else {
         monthly_breakdown[mKey].operating_activities.outflows += amount;
-        monthly_breakdown[mKey].expenses.total += amount;
-        if (counterpart && counterpart.accountType === 'expense') {
-          const code = cpCode;
-          if (!expenseCodesByMonth[mKey]) expenseCodesByMonth[mKey] = {};
-          expenseCodesByMonth[mKey][code] = round2((expenseCodesByMonth[mKey][code] || 0) + amount);
-          monthly_breakdown[mKey].expenses[code] = round2(
-            (Number(monthly_breakdown[mKey].expenses[code]) || 0) + amount,
-          );
+        const isRefundFlow = tt === 'refund_issued' || REFUND_CODES.has(cpCode);
+        if (counterpart && cpCode) {
+          if (isRefundFlow) {
+            monthly_breakdown[mKey].refunds.by_account[cpCode] = round2(
+              (Number(monthly_breakdown[mKey].refunds.by_account[cpCode]) || 0) + amount
+            );
+          } else {
+            if (!expenseCodesByMonth[mKey]) expenseCodesByMonth[mKey] = {};
+            expenseCodesByMonth[mKey][cpCode] = round2((expenseCodesByMonth[mKey][cpCode] || 0) + amount);
+            monthly_breakdown[mKey].expenses[cpCode] = round2(
+              (Number(monthly_breakdown[mKey].expenses[cpCode]) || 0) + amount
+            );
+          }
         }
         const expRow = {
           transactionId: pubId,
@@ -386,7 +410,13 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
           accountName: cpName,
           category: 'expense',
         };
-        monthly_breakdown[mKey].expenses.transactions.push(expRow);
+        if (isRefundFlow) {
+          monthly_breakdown[mKey].refunds.total += amount;
+          monthly_breakdown[mKey].refunds.transactions.push(expRow);
+        } else {
+          monthly_breakdown[mKey].expenses.total += amount;
+          monthly_breakdown[mKey].expenses.transactions.push(expRow);
+        }
         const detailRow = {
           id: `${pubId}-1`,
           expense_id: null,
@@ -400,8 +430,10 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
           transaction_details: { transaction_id: pubId, entry_index: 1 },
         };
         const line = { amount, accountCode: cpCode, accountName: cpName, row: detailRow };
-        if (!expenseLinesForBreakdown[mKey]) expenseLinesForBreakdown[mKey] = [];
-        expenseLinesForBreakdown[mKey].push(line);
+        if (!isRefundFlow) {
+          if (!expenseLinesForBreakdown[mKey]) expenseLinesForBreakdown[mKey] = [];
+          expenseLinesForBreakdown[mKey].push(line);
+        }
         allExpenseRows.push(expRow);
         allExpenseDetailRows.push(detailRow);
       }
@@ -445,8 +477,12 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
       if (bd[z] === undefined) bd[z] = 0;
     }
     mb.operating_activities.breakdown = bd;
+    mb.operating_activities.breakdown_by_account = withAccountNamesByCode(expenseCodesByMonth[mKey] || {});
 
     mb.expenses.total = round2(mb.expenses.total);
+    mb.refunds.total = round2(mb.refunds.total);
+    mb.expenses.by_account = withAccountNamesByCode(expenseCodesByMonth[mKey] || {});
+    mb.refunds.by_account = withAccountNamesByCode(mb.refunds.by_account || {});
   }
 
   const bsByMonthEnd = {};
@@ -502,6 +538,12 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
   const yearlyTotalsIncome = {};
   for (const k of INCOME_BUCKET_KEYS) yearlyTotalsIncome[k] = round2(yIncome[k]);
   yearlyTotalsIncome.total = round2(INCOME_BUCKET_KEYS.reduce((s, k) => s + yIncome[k], 0));
+  const yearlyOperatingBreakdown = {};
+  for (const { key } of months) {
+    for (const [code, amt] of Object.entries(expenseCodesByMonth[key] || {})) {
+      yearlyOperatingBreakdown[code] = round2((yearlyOperatingBreakdown[code] || 0) + Number(amt || 0));
+    }
+  }
 
   const netYearly = months.reduce((s, { key }) => s + monthly_breakdown[key].net_cash_flow, 0);
 
@@ -596,7 +638,8 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
         inflows: round2(yOpIn),
         outflows: round2(yOpOut),
         net: round2(yOpIn - yOpOut),
-        breakdown: {},
+        breakdown: yearlyOperatingBreakdown,
+        breakdown_by_account: withAccountNamesByCode(yearlyOperatingBreakdown),
       },
       investing_activities: {
         inflows: round2(yInvIn),
@@ -716,6 +759,11 @@ async function buildLegacyCashFlowDashboardResponse(start, end) {
         by_month: Object.fromEntries(months.map(({ key }) => [key, monthly_breakdown[key].expenses.total])),
         by_residence: {},
         by_type: expenseBreakdownYear,
+        by_account: withAccountNamesByCode(yearlyOperatingBreakdown),
+      },
+      refunds: {
+        total_amount: round2(months.reduce((s, { key }) => s + Number(monthly_breakdown[key].refunds.total || 0), 0)),
+        by_month: Object.fromEntries(months.map(({ key }) => [key, round2(monthly_breakdown[key].refunds.total || 0)])),
       },
       transactions: journals.map((je) => ({
         transactionId: je.publicTransactionId ? String(je.publicTransactionId) : `JE_${String(je._id)}`,

@@ -3,6 +3,23 @@ const accountCodeService = require('../services/accountCodeService');
 const { asyncHandler } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 
+/**
+ * Accepts canonical SUB_TYPES (e.g. FIXED_ASSET) or human labels ("Fixed Asset", "fixed-asset").
+ * @param {string} raw
+ * @returns {string|null}
+ */
+function normalizeSubTypeInput(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const trimmed = String(raw).trim();
+  if (Account.SUB_TYPES.includes(trimmed)) return trimmed;
+  const slug = trimmed
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/_+/g, '_');
+  if (Account.SUB_TYPES.includes(slug)) return slug;
+  return null;
+}
+
 /** When subType / normalBalance are omitted on POST /accounts */
 function inferSubTypeAndNormalBalance(type) {
   const t = String(type || '').trim().toUpperCase();
@@ -12,6 +29,24 @@ function inferSubTypeAndNormalBalance(type) {
   if (t === 'REVENUE') return { subType: 'OPERATING_REVENUE', normalBalance: 'CREDIT' };
   if (t === 'EXPENSE') return { subType: 'OPERATING_EXPENSE', normalBalance: 'DEBIT' };
   return null;
+}
+
+/**
+ * UI often sends labels like "Fixed Asset"; the schema stores SUB_TYPES enum tokens (e.g. FIXED_ASSET).
+ * @param {string|null|undefined} raw
+ * @returns {string|null}
+ */
+function normalizeSubTypeInput(raw) {
+  if (raw == null || String(raw).trim() === '') return null;
+  const trimmed = String(raw).trim();
+  if (Account.SUB_TYPES.includes(trimmed)) return trimmed;
+  const slug = trimmed
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+  if (Account.SUB_TYPES.includes(slug)) return slug;
+  return trimmed;
 }
 
 /** Prefix for numeric_sequence when `autoCode: true` (avoids clashing with seeded 4-digit codes). */
@@ -135,11 +170,12 @@ const createAccount = asyncHandler(async (req, res) => {
   }
 
   const inferred = inferSubTypeAndNormalBalance(typeNorm);
-  const subTypeResolved =
+  const subTypeRaw =
     subType != null && String(subType).trim() !== '' ? String(subType).trim() : inferred?.subType;
+  const subTypeResolved = normalizeSubTypeInput(subTypeRaw);
   const normalBalanceResolved =
     normalBalance != null && String(normalBalance).trim() !== ''
-      ? String(normalBalance).trim()
+      ? String(normalBalance).trim().toUpperCase()
       : inferred?.normalBalance;
 
   if (!subTypeResolved || !normalBalanceResolved) {
@@ -152,7 +188,10 @@ const createAccount = asyncHandler(async (req, res) => {
   if (!Account.SUB_TYPES.includes(subTypeResolved)) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid subType — must match a SUB_TYPES value on the Account model (or omit to use the default for your type).',
+      message:
+        'Invalid subType — use a SUB_TYPES token (e.g. FIXED_ASSET for fixed assets), or omit subType to use the default for your type. Human labels like "Fixed Asset" are accepted when they map to a known token.',
+      allowedSubTypes: Account.SUB_TYPES,
+      hint: typeNorm === 'ASSET' ? 'For barns/equipment use subType: "FIXED_ASSET" (or "Fixed Asset").' : undefined,
     });
   }
   if (!['DEBIT', 'CREDIT'].includes(normalBalanceResolved)) {

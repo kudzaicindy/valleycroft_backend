@@ -13,6 +13,11 @@ const BANK = '1001';
 /** Accounts Receivable — used when revenue is recognised on booking confirmation (accrual) */
 const ACCOUNTS_RECEIVABLE = '1010';
 
+function cleanAccountCode(value) {
+  if (value == null) return '';
+  return String(value).trim();
+}
+
 function mapIncomeAccount(category) {
   const c = (category || '').toLowerCase();
   if (c === 'booking') return '4001';
@@ -33,17 +38,20 @@ function mapExpenseAccount(category) {
   return '6013';
 }
 
-function buildLines(tx) {
+function buildLines(tx, options = {}) {
   const amt = Math.abs(Number(tx.amount));
   if (!amt || Number.isNaN(amt)) throw new Error('Transaction amount must be a positive number');
 
   const desc = (tx.description || tx.category || 'Transaction').slice(0, 200);
+  const explicitDebit = cleanAccountCode(options.debitAccount || tx.debitAccount);
+  const explicitCredit = cleanAccountCode(options.creditAccount || tx.creditAccount);
 
   if (tx.type === 'income') {
     const rev = mapIncomeAccount(tx.category);
     const useAr = tx.revenueRecognition === 'accrual_ar';
     const childAr = useAr && String(tx.receivableAccountCode || '').trim();
-    const debitAccount = useAr ? childAr || ACCOUNTS_RECEIVABLE : BANK;
+    const debitAccount = explicitDebit || (useAr ? childAr || ACCOUNTS_RECEIVABLE : BANK);
+    const creditAccount = explicitCredit || rev;
     const debitLabel = useAr
       ? childAr
         ? `Accounts receivable — ${childAr}`
@@ -51,15 +59,17 @@ function buildLines(tx) {
       : 'Bank — receipt';
     return [
       { accountCode: debitAccount, debit: amt, description: debitLabel },
-      { accountCode: rev, credit: amt, description: desc },
+      { accountCode: creditAccount, credit: amt, description: desc },
     ];
   }
 
   if (tx.type === 'expense') {
     const exp = mapExpenseAccount(tx.category);
+    const debitAccount = explicitDebit || exp;
+    const creditAccount = explicitCredit || BANK;
     return [
-      { accountCode: exp, debit: amt, description: desc },
-      { accountCode: BANK, credit: amt, description: 'Bank — payment' },
+      { accountCode: debitAccount, debit: amt, description: desc },
+      { accountCode: creditAccount, credit: amt, description: 'Bank — payment' },
     ];
   }
 
@@ -153,13 +163,13 @@ async function resolveLinesFromSpecs(lineSpecs) {
  * Post v3 AUTO journal for a saved transaction document.
  * @returns {Promise<{ lines: object[], financialJournalEntryId?: import('mongoose').Types.ObjectId }>}
  */
-async function postJournalForTransaction(tx, userId) {
+async function postJournalForTransaction(tx, userId, options = {}) {
   if (tx.financialJournalEntryId) {
     throw new Error(
       'This transaction already has a v3 journal (e.g. from booking confirmation). A second AUTO entry would double-count revenue.'
     );
   }
-  const lineSpecs = buildLines(tx);
+  const lineSpecs = buildLines(tx, options);
   const entryDate = tx.date ? new Date(tx.date) : new Date();
   const resolvedLines = await resolveLinesFromSpecs(lineSpecs);
 

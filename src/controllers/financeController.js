@@ -443,6 +443,10 @@ const getTransactions = asyncHandler(async (req, res) => {
 });
 
 const createTransaction = asyncHandler(async (req, res) => {
+  const postingOptions = {
+    debitAccount: req.body?.debitAccount,
+    creditAccount: req.body?.creditAccount,
+  };
   const rawGb = req.body.guestBooking;
   const rawBooking = req.body.booking;
   const guestBookingDedupeId =
@@ -579,7 +583,7 @@ const createTransaction = asyncHandler(async (req, res) => {
     });
     try {
       const { entryId, lines, financialJournalEntryId } =
-        await transactionJournalService.postJournalForTransaction(tx, req.user._id);
+        await transactionJournalService.postJournalForTransaction(tx, req.user._id, postingOptions);
       tx.journalEntryId = entryId;
       tx.financialJournalEntryId = financialJournalEntryId;
       tx.lines = lines;
@@ -676,7 +680,10 @@ const updateTransaction = asyncHandler(async (req, res) => {
     tx.lines = [];
     await tx.save();
     const { entryId, lines, financialJournalEntryId } =
-      await transactionJournalService.postJournalForTransaction(tx, req.user._id);
+      await transactionJournalService.postJournalForTransaction(tx, req.user._id, {
+        debitAccount: req.body?.debitAccount,
+        creditAccount: req.body?.creditAccount,
+      });
     tx.journalEntryId = entryId;
     tx.financialJournalEntryId = financialJournalEntryId;
     tx.lines = lines;
