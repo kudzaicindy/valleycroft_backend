@@ -7,10 +7,11 @@ const Room = require('../models/Room');
  * @param {ObjectId|string} roomId - Room _id
  * @param {Date|string} checkIn - Start date
  * @param {Date|string} checkOut - End date
- * @param {ObjectId|string} [excludeGuestBookingId] - Optional booking id to exclude (e.g. when confirming)
+ * @param {ObjectId|string} [excludeGuestBookingId] - Optional guest booking id to exclude (e.g. when confirming)
+ * @param {ObjectId|string} [excludeBookingId] - Optional internal booking id to exclude (e.g. when updating)
  * @returns {Promise<boolean>} - true if room is available for the dates
  */
-async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBookingId = null) {
+async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBookingId = null, excludeBookingId = null) {
   const start = new Date(checkIn);
   const end = new Date(checkOut);
   const guestQuery = {
@@ -28,6 +29,7 @@ async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBo
       { eventDate: { $gte: start, $lte: end } },
     ],
   };
+  if (excludeBookingId) internalQuery._id = { $ne: excludeBookingId };
   const [overlappingGuest, overlappingInternal] = await Promise.all([
     GuestBooking.findOne(guestQuery).lean(),
     Booking.findOne(internalQuery).lean(),

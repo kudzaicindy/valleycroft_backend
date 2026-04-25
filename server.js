@@ -57,6 +57,7 @@ app.use('/api/reports', require('./src/routes/reportRoutes'));
 app.use('/api/debtors', require('./src/routes/debtorRoutes'));
 app.use('/api/suppliers', require('./src/routes/supplierRoutes'));
 app.use('/api/invoices', require('./src/routes/invoiceRoutes'));
+app.use('/api/quotations', require('./src/routes/quotationRoutes'));
 app.use('/api/refunds', require('./src/routes/refundRoutes'));
 app.use('/api/audit', require('./src/routes/auditRoutes'));
 app.use('/api/emails', require('./src/routes/emailRoutes'));
@@ -79,9 +80,18 @@ app.use('/api/admin/accounting/v3', redirectPreservePath('/api/admin/accounting/
 app.use('/api/admin/accounting', redirectPreservePath('/api/admin/accounting', '/api/accounting'));
 app.use('/api/admin/finance', redirectPreservePath('/api/admin/finance', '/api/finance'));
 app.use('/api/admin/statements', redirectPreservePath('/api/admin/statements', '/api/statements'));
+app.use('/api/admin/dashboard', redirectPreservePath('/api/admin/dashboard', '/api/finance/dashboard'));
+app.use('/api/admin/transactions', redirectPreservePath('/api/admin/transactions', '/api/finance/transactions'));
+app.use('/api/admin/salary', redirectPreservePath('/api/admin/salary', '/api/finance/salary'));
+app.use('/api/admin/cashflow', redirectPreservePath('/api/admin/cashflow', '/api/finance/cashflow'));
+app.use('/api/admin/cash-flow', redirectPreservePath('/api/admin/cash-flow', '/api/finance/cash-flow'));
+app.use('/api/admin/income-statement', redirectPreservePath('/api/admin/income-statement', '/api/finance/income-statement'));
+app.use('/api/admin/balance-sheet', redirectPreservePath('/api/admin/balance-sheet', '/api/finance/balance-sheet'));
+app.use('/api/admin/pl', redirectPreservePath('/api/admin/pl', '/api/finance/pl'));
 app.use('/api/admin/debtors', redirectPreservePath('/api/admin/debtors', '/api/finance/debtors'));
 app.use('/api/admin/suppliers', redirectPreservePath('/api/admin/suppliers', '/api/finance/suppliers'));
 app.use('/api/admin/invoices', redirectPreservePath('/api/admin/invoices', '/api/finance/invoices'));
+app.use('/api/admin/quotations', redirectPreservePath('/api/admin/quotations', '/api/quotations'));
 app.use('/api/admin/refunds', redirectPreservePath('/api/admin/refunds', '/api/finance/refunds'));
 
 // Health check — critical for Render keepalive

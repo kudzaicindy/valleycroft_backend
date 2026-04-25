@@ -36,6 +36,7 @@ router.get('/balance-sheet', authorize('finance', 'ceo'), financeStatements.getB
 router.get('/pl', authorize('finance', 'ceo'), financeStatements.getPL);
 router.get('/salary', authorize('finance', 'admin', 'ceo'), financeController.getSalary);
 router.post('/salary', authorize('finance', 'admin'), financeController.createSalary);
+router.delete('/salary/:id', authorize('finance', 'admin'), financeController.deleteSalary);
 router.get('/salary/employee/:id', authorize('finance', 'admin'), financeController.getSalaryByEmployee);
 
 module.exports = router;

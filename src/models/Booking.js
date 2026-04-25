@@ -12,6 +12,21 @@ const bookingSchema = new mongoose.Schema({
   eventDate: Date,
   amount: Number,
   deposit: Number,
+  grossAmount: Number,
+  receivedAmount: Number,
+  platformCharge: Number,
+  externalCharge: Number,
+  /** Optional denormalized room name from external platform payloads. */
+  roomName: String,
+  /** Booking channel/platform for internal captures (direct, airbnb, booking.com, etc.). */
+  platform: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    default: 'direct',
+  },
+  /** Raw source tag from upstream system/platform payload. */
+  source: { type: String, trim: true, lowercase: true },
   status: {
     type: String,
     enum: ['pending', 'confirmed', 'checked-in', 'checked-out', 'cancelled'],

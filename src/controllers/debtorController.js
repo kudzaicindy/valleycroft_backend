@@ -29,21 +29,24 @@ function pickDebtorUpdates(body = {}) {
 const guestBookingPopulate = {
   path: 'guestBookingRef',
   select:
-    'guestName guestEmail guestPhone checkIn checkOut status totalAmount deposit trackingCode roomId notes',
+    'guestName guestEmail guestPhone checkIn checkOut status totalAmount deposit trackingCode source roomId notes',
   populate: { path: 'roomId', select: 'name type slug capacity pricePerNight roomType spaceCategory' },
 };
 
 const bookingPopulate = {
   path: 'bookingRef',
-  select: 'guestName guestEmail guestPhone type checkIn checkOut eventDate status amount deposit roomId',
+  select: 'guestName guestEmail guestPhone type checkIn checkOut eventDate status amount deposit platform roomId',
   populate: { path: 'roomId', select: 'name type slug capacity pricePerNight roomType spaceCategory' },
 };
 
 function mapDebtorRowsWithRoom(rows) {
   return rows.map((r) => ({
     ...r,
-    bookingRef: r.bookingRef ? withRoomPreview(r.bookingRef) : r.bookingRef,
-    guestBookingRef: r.guestBookingRef ? withRoomPreview(r.guestBookingRef) : r.guestBookingRef,
+    platform: r.bookingRef?.platform || r.guestBookingRef?.source || 'direct',
+    bookingRef: r.bookingRef ? { ...withRoomPreview(r.bookingRef), platform: r.bookingRef.platform || 'direct' } : r.bookingRef,
+    guestBookingRef: r.guestBookingRef
+      ? { ...withRoomPreview(r.guestBookingRef), platform: r.guestBookingRef.source || 'website' }
+      : r.guestBookingRef,
   }));
 }
 

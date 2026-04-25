@@ -401,6 +401,34 @@ function scheduleInvoiceDelivery(payload) {
 }
 
 /**
+ * Send invoice notifications immediately to selected channels.
+ * @param {object} payload
+ * @param {{ channels?: Array<'email'|'whatsapp'> }} [opts]
+ */
+async function sendInvoiceDeliveryNow(payload, opts = {}) {
+  const requested = Array.isArray(opts.channels) && opts.channels.length ? opts.channels : ['email', 'whatsapp'];
+  const channels = [...new Set(requested.map((c) => String(c).toLowerCase()))].filter((c) =>
+    ['email', 'whatsapp'].includes(c)
+  );
+  const results = {};
+  if (channels.includes('email')) {
+    try {
+      results.email = await deliverInvoiceEmail(payload);
+    } catch (err) {
+      results.email = { sent: false, error: err.message };
+    }
+  }
+  if (channels.includes('whatsapp')) {
+    try {
+      results.whatsapp = await deliverInvoiceWhatsApp(payload);
+    } catch (err) {
+      results.whatsapp = { sent: false, error: err.message };
+    }
+  }
+  return results;
+}
+
+/**
  * After a public guest booking is submitted (pending): notify admins + guest.
  * @param {{
  *   guestName: string,
@@ -462,6 +490,7 @@ function scheduleInternalBookingCreatedAdmin(bookingLean) {
 
 module.exports = {
   scheduleInvoiceDelivery,
+  sendInvoiceDeliveryNow,
   scheduleNewGuestBookingEmails,
   scheduleInternalBookingCreatedAdmin,
   mailConfigured,

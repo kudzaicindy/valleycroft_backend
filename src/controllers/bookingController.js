@@ -4,6 +4,7 @@ const logAudit = require('../utils/audit');
 const { withRoomPreviewMany, withRoomPreview } = require('../utils/bookingPreview');
 const bookingRevenueService = require('../services/bookingRevenueService');
 const { scheduleInternalBookingCreatedAdmin } = require('../services/invoiceNotifyService');
+const { isRoomAvailableForDates } = require('../utils/availability');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+?[0-9\s\-()]{7,20}$/;
@@ -18,6 +19,13 @@ const BOOKING_UPDATE_FIELDS = [
   'eventDate',
   'amount',
   'deposit',
+  'grossAmount',
+  'receivedAmount',
+  'platformCharge',
+  'externalCharge',
+  'roomName',
+  'platform',
+  'source',
   'status',
   'notes',
 ];
@@ -60,6 +68,26 @@ function validateBookingPayload(payload) {
     if (!isValidDateInput(payload.eventDate)) {
       return 'eventDate is required and must be a valid date for event bookings';
     }
+  }
+  return null;
+}
+
+async function validateRoomAvailability(payload, excludeBookingId = null) {
+  const type = String(payload.type || '').toLowerCase();
+  const status = String(payload.status || 'pending').toLowerCase();
+  if (status === 'cancelled') return null;
+  if (!payload.roomId) return null;
+
+  if (type === 'bnb') {
+    const available = await isRoomAvailableForDates(payload.roomId, payload.checkIn, payload.checkOut, null, excludeBookingId);
+    if (!available) return 'Room is already booked for the selected dates';
+  } else if (type === 'event' && isValidDateInput(payload.eventDate)) {
+    const eventStart = new Date(payload.eventDate);
+    eventStart.setUTCHours(0, 0, 0, 0);
+    const eventEnd = new Date(payload.eventDate);
+    eventEnd.setUTCHours(23, 59, 59, 999);
+    const available = await isRoomAvailableForDates(payload.roomId, eventStart, eventEnd, null, excludeBookingId);
+    if (!available) return 'Room is already booked for the selected event date';
   }
   return null;
 }
@@ -113,6 +141,10 @@ const create = asyncHandler(async (req, res) => {
   if (payloadError) {
     return res.status(400).json({ success: false, message: payloadError });
   }
+  const availabilityError = await validateRoomAvailability(payload);
+  if (availabilityError) {
+    return res.status(400).json({ success: false, message: availabilityError });
+  }
 
   const booking = await Booking.create({ ...payload, createdBy: req.user._id });
   if (booking.status === 'confirmed') {
@@ -151,6 +183,10 @@ const update = asyncHandler(async (req, res) => {
   const payloadError = validateBookingPayload(merged);
   if (payloadError) {
     return res.status(400).json({ success: false, message: payloadError });
+  }
+  const availabilityError = await validateRoomAvailability(merged, booking._id);
+  if (availabilityError) {
+    return res.status(400).json({ success: false, message: availabilityError });
   }
   Object.assign(booking, updates);
   await booking.save();

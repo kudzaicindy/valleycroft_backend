@@ -858,6 +858,12 @@ async function salaryExpenseDescription(salaryDoc) {
 
 const createSalary = asyncHandler(async (req, res) => {
   const body = { ...req.body };
+  // Backward-compatible alias from frontend payloads.
+  if (!body.payeeName && body.employeeName) {
+    body.payeeName = String(body.employeeName).trim();
+  }
+  delete body.employeeName;
+
   const emp = body.employee;
   if (emp === '' || emp === undefined || emp === null) {
     delete body.employee;
@@ -945,6 +951,54 @@ const createSalary = asyncHandler(async (req, res) => {
   });
 });
 
+const deleteSalary = asyncHandler(async (req, res) => {
+  const salary = await Salary.findById(req.params.id);
+  if (!salary) return res.status(404).json({ success: false, message: 'Salary record not found' });
+
+  const before = salary.toObject();
+  let deletedExpenseTransactionId = null;
+
+  if (salary.expenseTransactionId) {
+    const tx = await Transaction.findById(salary.expenseTransactionId);
+    if (tx) {
+      try {
+        if (tx.financialJournalEntryId) {
+          await transactionJournalService.voidFinancialJournalLinkedToTransaction(tx, req.user._id, 'Salary deleted');
+        }
+        if (tx.journalEntryId) {
+          await transactionJournalService.voidJournalLinkedToTransaction(tx, req.user._id, 'Salary deleted');
+        }
+      } catch (err) {
+        return res.status(400).json({
+          success: false,
+          message: err.message || 'Could not void linked salary journal entry',
+        });
+      }
+      deletedExpenseTransactionId = tx._id;
+      await tx.deleteOne();
+    }
+  }
+
+  await salary.deleteOne();
+  await logAudit({
+    userId: req.user._id,
+    role: req.user.role,
+    action: 'delete',
+    entity: 'Salary',
+    entityId: req.params.id,
+    before,
+    req,
+  });
+
+  res.json({
+    success: true,
+    message: 'Salary deleted',
+    meta: {
+      deletedExpenseTransactionId,
+    },
+  });
+});
+
 const getSalaryByEmployee = asyncHandler(async (req, res) => {
   const data = await Salary.find({ employee: req.params.id }).sort({ paidOn: -1 }).lean();
   res.json({ success: true, data });
@@ -961,5 +1015,6 @@ module.exports = {
   getPL,
   getSalary,
   createSalary,
+  deleteSalary,
   getSalaryByEmployee,
 };
