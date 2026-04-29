@@ -235,15 +235,7 @@ async function onInternalBookingConfirmed(b, userId) {
   b.invoiceId = invoice._id;
   await b.save();
 
-  scheduleInvoiceDelivery({
-    guestName: b.guestName,
-    email: b.guestEmail,
-    phone: b.guestPhone,
-    ...buildInvoiceEmailFields(invoice, total, deposit),
-    trackingCode: undefined,
-    relatedModel: 'Booking',
-    relatedId: b._id,
-  });
+  // Internal booking invoices are records-only: do not send any email notifications.
 
   return {
     debtorId: debtor._id,

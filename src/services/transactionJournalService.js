@@ -35,6 +35,7 @@ function mapExpenseAccount(category) {
   if (c === 'supplier') return '6013';
   if (c === 'refund') return '4010';
   if (c === 'booking') return '5001';
+  if (c === 'fixed_asset' || c === 'capex' || c === 'equipment_purchase' || c === 'equipment') return '1100';
   return '6013';
 }
 
@@ -89,6 +90,7 @@ function v3TransactionTypeForManual(tx) {
   if (c === 'refund') return 'refund_issued';
   if (c === 'marketing') return 'other_expense';
   if (c === 'booking') return 'consumables_purchase';
+  if (c === 'fixed_asset' || c === 'capex' || c === 'equipment_purchase' || c === 'equipment') return 'equipment_purchase';
   return 'other_expense';
 }
 
