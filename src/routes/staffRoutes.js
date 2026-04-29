@@ -12,7 +12,7 @@ const {
 
 const router = express.Router();
 
-router.get('/employees', protect, authorize('admin', 'ceo'), getEmployees);
+router.get('/employees', protect, authorize('admin', 'ceo', 'finance'), getEmployees);
 router.put('/employees/:id', protect, authorize('admin'), updateEmployee);
 router.post('/tasks', protect, authorize('admin'), assignTask);
 router.get('/tasks/:employeeId', protect, getTasksForEmployee);
