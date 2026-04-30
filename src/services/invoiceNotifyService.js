@@ -71,6 +71,9 @@ function getTransporter() {
       host: 'smtp.gmail.com',
       port: 587,
       secure: false,
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
       auth: {
         user: process.env.GMAIL_USER.trim(),
         pass: gmailAppPasswordPlain(),
@@ -82,6 +85,9 @@ function getTransporter() {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
       auth: {
         type: 'OAuth2',
         user: process.env.GMAIL_USER.trim(),
@@ -96,10 +102,68 @@ function getTransporter() {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === 'true',
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
   }
   throw new Error('No mail transport configured');
+}
+
+function isConnectivityError(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  return (
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('network')
+  );
+}
+
+function gmailAppPasswordFallbackTransporters() {
+  if (!gmailAppPasswordConfigured()) return [];
+  const user = process.env.GMAIL_USER.trim();
+  const pass = gmailAppPasswordPlain();
+  const base = {
+    host: 'smtp.gmail.com',
+    auth: { user, pass },
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
+  };
+  return [
+    {
+      label: 'gmail_app_password_587',
+      transporter: nodemailer.createTransport({ ...base, port: 587, secure: false }),
+    },
+    {
+      label: 'gmail_app_password_465',
+      transporter: nodemailer.createTransport({ ...base, port: 465, secure: true }),
+    },
+  ];
+}
+
+async function verifyWithFallback() {
+  const candidates = gmailAppPasswordFallbackTransporters();
+  if (!candidates.length) {
+    const transporter = getTransporter();
+    await transporter.verify();
+    return { ok: true, mode: 'single' };
+  }
+  let lastErr = null;
+  for (const c of candidates) {
+    try {
+      await c.transporter.verify();
+      return { ok: true, mode: c.label };
+    } catch (err) {
+      lastErr = err;
+      if (!isConnectivityError(err)) break;
+    }
+  }
+  throw lastErr || new Error('Mail verify failed');
 }
 
 function mailTransportSummary() {
@@ -145,9 +209,8 @@ async function verifyMailConnection() {
   }
   const summary = mailTransportSummary();
   try {
-    const transporter = getTransporter();
-    await transporter.verify();
-    return { ok: true, skipped: false, summary };
+    const verified = await verifyWithFallback();
+    return { ok: true, skipped: false, summary: { ...summary, mode: verified.mode } };
   } catch (err) {
     return {
       ok: false,
@@ -201,8 +264,24 @@ async function sendMail({ to, subject, html, text, templateKey, relatedModel, re
   }
 
   try {
-    const transporter = getTransporter();
-    const info = await transporter.sendMail({ from, to, subject, text, html });
+    let info;
+    const candidates = gmailAppPasswordFallbackTransporters();
+    if (candidates.length) {
+      let lastErr = null;
+      for (const c of candidates) {
+        try {
+          info = await c.transporter.sendMail({ from, to, subject, text, html });
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (!isConnectivityError(err)) throw err;
+        }
+      }
+      if (!info && lastErr) throw lastErr;
+    } else {
+      const transporter = getTransporter();
+      info = await transporter.sendMail({ from, to, subject, text, html });
+    }
     await logOutboundEmail({
       ...base,
       status: 'sent',
