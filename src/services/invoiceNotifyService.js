@@ -67,13 +67,15 @@ function gmailAppPasswordPlain() {
 
 function getTransporter() {
   if (gmailAppPasswordConfigured()) {
+    const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
+    const use465 = gmailMode === '465';
     return nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
+      port: use465 ? 465 : 587,
+      secure: use465,
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
       auth: {
         user: process.env.GMAIL_USER.trim(),
         pass: gmailAppPasswordPlain(),
@@ -85,9 +87,9 @@ function getTransporter() {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
       auth: {
         type: 'OAuth2',
         user: process.env.GMAIL_USER.trim(),
@@ -102,9 +104,9 @@ function getTransporter() {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === 'true',
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
+      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
+      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
+      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
   }
@@ -125,16 +127,17 @@ function isConnectivityError(err) {
 
 function gmailAppPasswordFallbackTransporters() {
   if (!gmailAppPasswordConfigured()) return [];
+  const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
   const user = process.env.GMAIL_USER.trim();
   const pass = gmailAppPasswordPlain();
   const base = {
     host: 'smtp.gmail.com',
     auth: { user, pass },
-    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 10000),
-    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 10000),
-    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 15000),
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
   };
-  return [
+  const candidates = [
     {
       label: 'gmail_app_password_587',
       transporter: nodemailer.createTransport({ ...base, port: 587, secure: false }),
@@ -144,6 +147,9 @@ function gmailAppPasswordFallbackTransporters() {
       transporter: nodemailer.createTransport({ ...base, port: 465, secure: true }),
     },
   ];
+  if (gmailMode === '587') return candidates.filter((c) => c.label.endsWith('_587'));
+  if (gmailMode === '465') return candidates.filter((c) => c.label.endsWith('_465'));
+  return candidates;
 }
 
 async function verifyWithFallback() {
