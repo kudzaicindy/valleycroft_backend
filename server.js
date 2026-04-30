@@ -7,6 +7,7 @@ require('dotenv').config();
 
 const connectDB = require('./src/config/db');
 const { redirectPreservePath } = require('./src/utils/canonicalApiRedirect');
+const { verifyMailConnection } = require('./src/services/invoiceNotifyService');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -112,4 +113,16 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  setImmediate(async () => {
+    const result = await verifyMailConnection();
+    if (result.skipped) {
+      console.log('[mail] startup check skipped:', result.reason, result.summary);
+      return;
+    }
+    if (result.ok) {
+      console.log('[mail] startup check ok:', result.summary);
+      return;
+    }
+    console.error('[mail] startup check failed:', result.summary, result.error || 'unknown_error');
+  });
 });

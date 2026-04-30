@@ -102,6 +102,62 @@ function getTransporter() {
   throw new Error('No mail transport configured');
 }
 
+function mailTransportSummary() {
+  if (gmailAppPasswordConfigured()) {
+    return {
+      provider: 'gmail_app_password',
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      user: process.env.GMAIL_USER ? process.env.GMAIL_USER.trim() : '',
+    };
+  }
+  if (gmailOAuthConfigured()) {
+    return {
+      provider: 'gmail_oauth2',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      user: process.env.GMAIL_USER ? process.env.GMAIL_USER.trim() : '',
+    };
+  }
+  if (smtpConfigured()) {
+    return {
+      provider: 'smtp',
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      user: process.env.SMTP_USER || '',
+    };
+  }
+  return {
+    provider: 'none',
+    host: null,
+    port: null,
+    secure: null,
+    user: '',
+  };
+}
+
+async function verifyMailConnection() {
+  if (!mailConfigured()) {
+    return { ok: false, skipped: true, reason: 'mail_not_configured', summary: mailTransportSummary() };
+  }
+  const summary = mailTransportSummary();
+  try {
+    const transporter = getTransporter();
+    await transporter.verify();
+    return { ok: true, skipped: false, summary };
+  } catch (err) {
+    return {
+      ok: false,
+      skipped: false,
+      summary,
+      error: err?.message || String(err),
+    };
+  }
+}
+
 /** E.164-like digits only; common ZA: leading 0 → 27 */
 function normalizeWhatsAppPhone(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -500,4 +556,6 @@ module.exports = {
   whatsappConfigured,
   adminBookingNotifyConfigured,
   normalizeWhatsAppPhone,
+  verifyMailConnection,
+  mailTransportSummary,
 };
