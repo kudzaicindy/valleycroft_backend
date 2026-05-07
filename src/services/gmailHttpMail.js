@@ -48,15 +48,9 @@ function bufferToBase64Url(buf) {
     .replace(/=+$/, '');
 }
 
-/** Build RFC 822 message bytes using nodemailer’s MIME builder (multipart html+text, encoding, etc.). */
-async function buildRawMimeBuffer({ from, to, subject, html, text }) {
-  const info = await getMimeTransport().sendMail({
-    from,
-    to,
-    subject,
-    html,
-    text,
-  });
+/** Build RFC 822 message bytes using nodemailer’s MIME builder (attachments, multipart, etc.). */
+async function buildRawMimeBuffer(mailOptions) {
+  const info = await getMimeTransport().sendMail(mailOptions);
   return info.message;
 }
 
@@ -66,10 +60,11 @@ async function verifyGmailApiConnection() {
 }
 
 /**
+ * @param {import('nodemailer').SendMailOptions} mailOptions
  * @returns {Promise<string>} Gmail API message id
  */
-async function sendGmailMessage({ from, to, subject, html, text }) {
-  const mimeBuf = await buildRawMimeBuffer({ from, to, subject, html, text });
+async function sendGmailMessage(mailOptions) {
+  const mimeBuf = await buildRawMimeBuffer(mailOptions);
   const raw = bufferToBase64Url(mimeBuf);
   const gmail = google.gmail({ version: 'v1', auth: getGmailOAuth2Client() });
   const res = await gmail.users.messages.send({

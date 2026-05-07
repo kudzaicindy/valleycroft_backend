@@ -1,9 +1,9 @@
-const nodemailer = require('nodemailer');
 const PDFDocument = require('pdfkit');
 const { marked } = require('marked');
 const Quotation = require('../models/Quotation');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
+const invoiceNotify = require('../services/invoiceNotifyService');
 
 const QUOTATION_UPDATE_FIELDS = [
   'quotationNumber',
@@ -73,40 +73,7 @@ function getMailFrom() {
 }
 
 function mailConfigured() {
-  const appPassword =
-    process.env.GMAIL_APP_PASSWORD ||
-    process.env.GMAIL_PASSWORD ||
-    process.env.GOOGLE_APP_PASSWORD ||
-    '';
-  return !!(
-    (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) ||
-    (process.env.GMAIL_USER && String(appPassword).trim())
-  );
-}
-
-function getTransporter() {
-  const appPassword =
-    process.env.GMAIL_APP_PASSWORD ||
-    process.env.GMAIL_PASSWORD ||
-    process.env.GOOGLE_APP_PASSWORD ||
-    '';
-  if (process.env.GMAIL_USER && String(appPassword).trim()) {
-    return nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: {
-        user: process.env.GMAIL_USER.trim(),
-        pass: String(appPassword).replace(/\s+/g, ''),
-      },
-    });
-  }
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
+  return invoiceNotify.mailConfigured();
 }
 
 function buildQuotationPdfBuffer(quotation) {
@@ -367,8 +334,7 @@ const sendEmail = asyncHandler(async (req, res) => {
   const pdfBuffer = await buildQuotationPdfBuffer(quotation.toObject());
   const subject = req.body.subject || `Quotation ${quotation.quotationNumber}`;
   const text = req.body.message || `Dear ${quotation.clientName || 'Client'},\n\nPlease find your quotation attached.`;
-  const transporter = getTransporter();
-  const info = await transporter.sendMail({
+  const info = await invoiceNotify.sendViaMailTransport({
     from: getMailFrom(),
     to,
     subject,
@@ -406,6 +372,5 @@ module.exports = {
   sendEmail,
   buildQuotationPdfBuffer,
   mailConfigured,
-  getTransporter,
   getMailFrom,
 };

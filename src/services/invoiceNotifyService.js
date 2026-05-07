@@ -311,6 +311,19 @@ function formatMoney(n) {
 }
 
 /**
+ * Single send using the same path as booking/invoice mail: Gmail API (OAuth, no app password) or SMTP.
+ * Use for controller code that passes full nodemailer options (e.g. PDF attachments).
+ * @param {import('nodemailer').SendMailOptions} mailOpts
+ */
+async function sendViaMailTransport(mailOpts) {
+  if (gmailHttpApiActive()) {
+    const id = await gmailHttpMail.sendGmailMessage(mailOpts);
+    return { messageId: id || undefined };
+  }
+  return getTransporter().sendMail(mailOpts);
+}
+
+/**
  * @param {{
  *   to: string,
  *   subject: string,
@@ -725,4 +738,5 @@ module.exports = {
   normalizeWhatsAppPhone,
   verifyMailConnection,
   mailTransportSummary,
+  sendViaMailTransport,
 };

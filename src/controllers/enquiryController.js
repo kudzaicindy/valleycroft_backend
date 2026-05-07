@@ -5,9 +5,9 @@ const logAudit = require('../utils/audit');
 const {
   buildQuotationPdfBuffer,
   mailConfigured,
-  getTransporter,
   getMailFrom,
 } = require('./quotationController');
+const invoiceNotify = require('../services/invoiceNotifyService');
 
 const PUBLIC_CREATE_FIELDS = [
   'guestName',
@@ -152,12 +152,11 @@ const respondToEnquiry = asyncHandler(async (req, res) => {
     if (!recipient) {
       return res.status(400).json({ success: false, message: 'Recipient email is required' });
     }
-    const transporter = getTransporter();
     const pdfBuffer = await buildQuotationPdfBuffer(quotation.toObject ? quotation.toObject() : quotation);
     const bodyText =
       responseMessage ||
       `Dear ${quotation.clientName || enquiry.guestName},\n\nThank you for your enquiry. Please find your quotation attached.\n\nRegards,\nValleycroft Team`;
-    mailInfo = await transporter.sendMail({
+    mailInfo = await invoiceNotify.sendViaMailTransport({
       from: getMailFrom(),
       to: recipient,
       subject: subject || `Quotation ${quotation.quotationNumber}`,
