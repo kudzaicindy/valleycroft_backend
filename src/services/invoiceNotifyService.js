@@ -1,10 +1,11 @@
 /**
- * Optional email (SMTP / Gmail app password / Gmail OAuth) and WhatsApp for bookings & invoices.
+ * Optional email (SMTP / Gmail app password / Gmail OAuth SMTP or Gmail HTTPS API) and WhatsApp for bookings & invoices.
  * Misconfiguration or provider errors are logged; they do not fail API responses.
  */
 const nodemailer = require('nodemailer');
 const mailTemplates = require('./mailTemplates');
 const { logOutboundEmail } = require('./emailLogService');
+const gmailHttpMail = require('./gmailHttpMail');
 
 function smtpConfigured() {
   return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
@@ -36,6 +37,17 @@ function gmailOAuthConfigured() {
 
 function mailConfigured() {
   return smtpConfigured() || gmailAppPasswordConfigured() || gmailOAuthConfigured();
+}
+
+/**
+ * Gmail OAuth without app password → send via Gmail REST API (HTTPS), so SMTP-blocked hosts (Render Free) work.
+ * Set GMAIL_USE_SMTP=true to force legacy SMTP for OAuth (e.g. local dev or paid hosts).
+ */
+function gmailHttpApiActive() {
+  if (!gmailOAuthConfigured()) return false;
+  if (gmailAppPasswordConfigured()) return false;
+  if (String(process.env.GMAIL_USE_SMTP || '').trim().toLowerCase() === 'true') return false;
+  return true;
 }
 
 function whatsappConfigured() {
@@ -105,6 +117,9 @@ function getTransporter() {
     });
   }
   if (gmailOAuthConfigured()) {
+    if (gmailHttpApiActive()) {
+      throw new Error('Gmail OAuth is configured for HTTP API; use gmailHttpMail.sendGmailMessage instead of SMTP');
+    }
     return nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
@@ -187,6 +202,10 @@ function gmailAppPasswordFallbackTransporters() {
 }
 
 async function verifyWithFallback() {
+  if (gmailHttpApiActive()) {
+    await gmailHttpMail.verifyGmailApiConnection();
+    return { ok: true, mode: 'gmail_http_api' };
+  }
   const candidates = gmailAppPasswordFallbackTransporters();
   if (!candidates.length) {
     const transporter = getTransporter();
@@ -224,8 +243,15 @@ function mailTransportSummary() {
     };
   }
   if (gmailOAuthConfigured()) {
+    if (gmailHttpApiActive()) {
+      return {
+        provider: 'gmail_oauth2_http_api',
+        transport: 'https://gmail.googleapis.com',
+        user: process.env.GMAIL_USER ? process.env.GMAIL_USER.trim() : '',
+      };
+    }
     return {
-      provider: 'gmail_oauth2',
+      provider: 'gmail_oauth2_smtp',
       host: 'smtp.gmail.com',
       port: 587,
       secure: false,
@@ -314,6 +340,18 @@ async function sendMail({ to, subject, html, text, templateKey, relatedModel, re
 
   try {
     let info;
+    if (gmailHttpApiActive()) {
+      const messageId = await gmailHttpMail.sendGmailMessage({ from, to, subject, html, text });
+      await logOutboundEmail({
+        ...base,
+        status: 'sent',
+        to,
+        messageId,
+        relatedModel,
+        relatedId,
+      });
+      return { sent: true, messageId };
+    }
     const candidates = gmailAppPasswordFallbackTransporters();
     if (candidates.length) {
       let lastErr = null;
@@ -681,6 +719,7 @@ module.exports = {
   smtpConfigured,
   gmailAppPasswordConfigured,
   gmailOAuthConfigured,
+  gmailHttpApiActive,
   whatsappConfigured,
   adminBookingNotifyConfigured,
   normalizeWhatsAppPhone,

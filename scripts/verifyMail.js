@@ -82,13 +82,56 @@ async function main() {
 
   if (gmailOAuthConfigured()) {
     const rt = process.env.GMAIL_REFRESH_TOKEN.trim();
-    console.log('Transport: Gmail OAuth → smtp.gmail.com:587 (STARTTLS)');
+    const useSmtpOAuth = String(process.env.GMAIL_USE_SMTP || '').trim().toLowerCase() === 'true';
+
     if (isPlaceholderRefreshToken(rt)) {
       console.log(
         '\nProblem: GMAIL_REFRESH_TOKEN still looks like a placeholder.\n' +
           'Get a real refresh token: OAuth Playground → Exchange tokens → copy Refresh token.\n',
       );
     }
+
+    if (!useSmtpOAuth) {
+      const { verifyGmailApiConnection, sendGmailMessage } = require('../src/services/gmailHttpMail');
+      console.log('Transport: Gmail OAuth → Gmail API (HTTPS only; works when SMTP ports are blocked)');
+      try {
+        await verifyGmailApiConnection();
+        console.log('Verify: OK (Gmail API profile reachable).\n');
+      } catch (err) {
+        console.error('Verify: FAILED');
+        console.error('  ', err.message);
+        if (String(err.message).includes('invalid_grant')) {
+          console.error(
+            '\n  invalid_grant usually means: wrong/expired refresh token, or token was issued for a different client id/secret.\n' +
+              '  Fix: generate a new refresh token in OAuth Playground using THIS client id + secret.\n',
+          );
+        }
+        if (String(err.code || err.response?.status) === '403' || String(err.message).includes('accessNotConfigured')) {
+          console.error(
+            '\n  Enable "Gmail API" for your Google Cloud project and ensure OAuth scopes include gmail.send or mail.google.com.\n',
+          );
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      const testTo = (process.env.VERIFY_MAIL_TO || '').trim();
+      if (testTo) {
+        const from = process.env.MAIL_FROM || process.env.GMAIL_USER;
+        await sendGmailMessage({
+          from,
+          to: testTo,
+          subject: 'Valley Croft Accommodation — mail test',
+          text: 'If you receive this, Gmail API mail is working.',
+        });
+        console.log(`Test email sent to ${testTo}`);
+      } else {
+        console.log('Tip: VERIFY_MAIL_TO=you@email.com npm run mail:verify  → sends one test email.');
+      }
+      return;
+    }
+
+    console.log('Transport: Gmail OAuth → smtp.gmail.com:587 (STARTTLS) [GMAIL_USE_SMTP=true]');
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
@@ -104,7 +147,7 @@ async function main() {
     });
     try {
       await transporter.verify();
-      console.log('Verify: OK (Google accepted your OAuth credentials).\n');
+      console.log('Verify: OK (Google accepted your OAuth credentials via SMTP).\n');
     } catch (err) {
       console.error('Verify: FAILED');
       console.error('  ', err.message);
