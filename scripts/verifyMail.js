@@ -47,6 +47,7 @@ async function main() {
       host: 'smtp.gmail.com',
       port: 587,
       secure: false,
+      requireTLS: true,
       auth: {
         user: process.env.GMAIL_USER.trim(),
         pass: gmailAppPasswordRaw().replace(/\s+/g, ''),
@@ -81,7 +82,7 @@ async function main() {
 
   if (gmailOAuthConfigured()) {
     const rt = process.env.GMAIL_REFRESH_TOKEN.trim();
-    console.log('Transport: Gmail OAuth → smtp.gmail.com:465');
+    console.log('Transport: Gmail OAuth → smtp.gmail.com:587 (STARTTLS)');
     if (isPlaceholderRefreshToken(rt)) {
       console.log(
         '\nProblem: GMAIL_REFRESH_TOKEN still looks like a placeholder.\n' +
@@ -90,8 +91,9 @@ async function main() {
     }
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
+      port: 587,
+      secure: false,
+      requireTLS: true,
       auth: {
         type: 'OAuth2',
         user: process.env.GMAIL_USER.trim(),

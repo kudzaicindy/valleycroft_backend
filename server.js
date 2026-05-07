@@ -125,6 +125,9 @@ async function start() {
           return;
         }
         console.error('[mail] startup check failed:', result.summary, result.error || 'unknown_error');
+        if (result.deployHint) {
+          console.error('[mail] hint:', result.deployHint);
+        }
       } catch (err) {
         console.error('[mail] startup check error:', err?.message || err);
       }

@@ -90,7 +90,7 @@ function genericSmtpSocketOptions() {
 
 function getTransporter() {
   if (gmailAppPasswordConfigured()) {
-    const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
+    const gmailMode = String(process.env.GMAIL_SMTP_MODE || '587').trim().toLowerCase();
     const use465 = gmailMode === '465';
     return nodemailer.createTransport({
       host: 'smtp.gmail.com',
@@ -107,8 +107,9 @@ function getTransporter() {
   if (gmailOAuthConfigured()) {
     return nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
+      port: 587,
+      secure: false,
+      requireTLS: true,
       ...gmailSocketOptions(),
       auth: {
         type: 'OAuth2',
@@ -143,9 +144,20 @@ function isConnectivityError(err) {
   );
 }
 
+/** Explain SMTP timeouts on hosts that block outbound mail ports (e.g. Render free tier). */
+function smtpFailureDeployHint(errorMessage) {
+  const msg = String(errorMessage || '').toLowerCase();
+  if (!msg.includes('timeout') && !msg.includes('timed out')) return null;
+  const render =
+    process.env.RENDER === 'true'
+      ? 'Render Free Web Services block outbound SMTP (465/587/25). Use a paid Render instance for Gmail SMTP, or send mail via an HTTPS provider (Resend, SendGrid, Mailgun). '
+      : '';
+  return `${render}See your platform docs for outbound SMTP / email API policies.`.trim();
+}
+
 function gmailAppPasswordFallbackTransporters() {
   if (!gmailAppPasswordConfigured()) return [];
-  const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
+  const gmailMode = String(process.env.GMAIL_SMTP_MODE || '587').trim().toLowerCase();
   const user = process.env.GMAIL_USER.trim();
   const pass = gmailAppPasswordPlain();
   const base = {
@@ -170,7 +182,8 @@ function gmailAppPasswordFallbackTransporters() {
   ];
   if (gmailMode === '587') return candidates.filter((c) => c.label.endsWith('_587'));
   if (gmailMode === '465') return candidates.filter((c) => c.label.endsWith('_465'));
-  return candidates;
+  if (gmailMode === 'auto') return candidates;
+  return candidates.filter((c) => c.label.endsWith('_587'));
 }
 
 async function verifyWithFallback() {
@@ -198,7 +211,7 @@ async function verifyWithFallback() {
 
 function mailTransportSummary() {
   if (gmailAppPasswordConfigured()) {
-    const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
+    const gmailMode = String(process.env.GMAIL_SMTP_MODE || '587').trim().toLowerCase();
     const use465 = gmailMode === '465';
     return {
       provider: 'gmail_app_password',
@@ -214,8 +227,8 @@ function mailTransportSummary() {
     return {
       provider: 'gmail_oauth2',
       host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
+      port: 587,
+      secure: false,
       user: process.env.GMAIL_USER ? process.env.GMAIL_USER.trim() : '',
     };
   }
@@ -246,11 +259,13 @@ async function verifyMailConnection() {
     const verified = await verifyWithFallback();
     return { ok: true, skipped: false, summary: { ...summary, mode: verified.mode } };
   } catch (err) {
+    const errorText = err?.message || String(err);
     return {
       ok: false,
       skipped: false,
       summary,
-      error: err?.message || String(err),
+      error: errorText,
+      deployHint: smtpFailureDeployHint(errorText),
     };
   }
 }
