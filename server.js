@@ -1,5 +1,4 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -10,8 +9,6 @@ const { redirectPreservePath } = require('./src/utils/canonicalApiRedirect');
 const { verifyMailConnection } = require('./src/services/invoiceNotifyService');
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-connectDB();
 
 app.use(helmet());
 app.use(compression());
@@ -111,18 +108,31 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  setImmediate(async () => {
-    const result = await verifyMailConnection();
-    if (result.skipped) {
-      console.log('[mail] startup check skipped:', result.reason, result.summary);
-      return;
-    }
-    if (result.ok) {
-      console.log('[mail] startup check ok:', result.summary);
-      return;
-    }
-    console.error('[mail] startup check failed:', result.summary, result.error || 'unknown_error');
+async function start() {
+  await connectDB();
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    setImmediate(async () => {
+      try {
+        const result = await verifyMailConnection();
+        if (result.skipped) {
+          console.log('[mail] startup check skipped:', result.reason, result.summary);
+          return;
+        }
+        if (result.ok) {
+          console.log('[mail] startup check ok:', result.summary);
+          return;
+        }
+        console.error('[mail] startup check failed:', result.summary, result.error || 'unknown_error');
+      } catch (err) {
+        console.error('[mail] startup check error:', err?.message || err);
+      }
+    });
   });
+}
+
+start().catch((err) => {
+  console.error('Failed to start server:', err?.message || err);
+  process.exit(1);
 });
