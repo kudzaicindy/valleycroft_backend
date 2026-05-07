@@ -65,6 +65,29 @@ function gmailAppPasswordPlain() {
   return gmailAppPasswordRaw().replace(/\s+/g, '');
 }
 
+/**
+ * Cloud hosts (Render, Fly, etc.) often resolve smtp.gmail.com to IPv6 first; broken IPv6 routes
+ * cause "Connection timeout". Nodemailer passes `family` to DNS lookup / socket (IPv4 when 4).
+ * Set SMTP_USE_IPV6=true to prefer dual-stack / IPv6.
+ */
+function gmailSocketOptions() {
+  const useIpv6 = String(process.env.SMTP_USE_IPV6 || '').trim().toLowerCase() === 'true';
+  return {
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 45000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 30000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 90000),
+    ...(useIpv6 ? {} : { family: 4 }),
+  };
+}
+
+function genericSmtpSocketOptions() {
+  return {
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
+  };
+}
+
 function getTransporter() {
   if (gmailAppPasswordConfigured()) {
     const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
@@ -73,9 +96,8 @@ function getTransporter() {
       host: 'smtp.gmail.com',
       port: use465 ? 465 : 587,
       secure: use465,
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
+      ...gmailSocketOptions(),
+      ...(!use465 ? { requireTLS: true } : {}),
       auth: {
         user: process.env.GMAIL_USER.trim(),
         pass: gmailAppPasswordPlain(),
@@ -87,9 +109,7 @@ function getTransporter() {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
+      ...gmailSocketOptions(),
       auth: {
         type: 'OAuth2',
         user: process.env.GMAIL_USER.trim(),
@@ -104,9 +124,7 @@ function getTransporter() {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === 'true',
-      connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
-      greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
-      socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
+      ...genericSmtpSocketOptions(),
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
   }
@@ -133,14 +151,17 @@ function gmailAppPasswordFallbackTransporters() {
   const base = {
     host: 'smtp.gmail.com',
     auth: { user, pass },
-    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 30000),
-    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 20000),
-    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 60000),
+    ...gmailSocketOptions(),
   };
   const candidates = [
     {
       label: 'gmail_app_password_587',
-      transporter: nodemailer.createTransport({ ...base, port: 587, secure: false }),
+      transporter: nodemailer.createTransport({
+        ...base,
+        port: 587,
+        secure: false,
+        requireTLS: true,
+      }),
     },
     {
       label: 'gmail_app_password_465',
@@ -159,6 +180,7 @@ async function verifyWithFallback() {
     await transporter.verify();
     return { ok: true, mode: 'single' };
   }
+  const attemptErrors = [];
   let lastErr = null;
   for (const c of candidates) {
     try {
@@ -166,19 +188,25 @@ async function verifyWithFallback() {
       return { ok: true, mode: c.label };
     } catch (err) {
       lastErr = err;
+      attemptErrors.push(`${c.label}: ${err?.message || err}`);
       if (!isConnectivityError(err)) break;
     }
   }
-  throw lastErr || new Error('Mail verify failed');
+  const detail = attemptErrors.length ? ` (${attemptErrors.join('; ')})` : '';
+  throw new Error(`${lastErr?.message || 'Mail verify failed'}${detail}`);
 }
 
 function mailTransportSummary() {
   if (gmailAppPasswordConfigured()) {
+    const gmailMode = String(process.env.GMAIL_SMTP_MODE || 'auto').trim().toLowerCase();
+    const use465 = gmailMode === '465';
     return {
       provider: 'gmail_app_password',
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
+      port: use465 ? 465 : 587,
+      secure: use465,
+      mode: gmailMode,
+      smtpIpv4: String(process.env.SMTP_USE_IPV6 || '').toLowerCase() !== 'true',
       user: process.env.GMAIL_USER ? process.env.GMAIL_USER.trim() : '',
     };
   }
