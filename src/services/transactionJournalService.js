@@ -26,6 +26,12 @@ function mapIncomeAccount(category) {
   return '4003';
 }
 
+/** Owner capital contribution — not P&L revenue; Dr cash, Cr equity (3001). */
+function isOwnerCapitalIncomeCategory(category) {
+  const c = (category || '').toLowerCase();
+  return c === 'owner_investment' || c === 'capital_injection';
+}
+
 function mapExpenseAccount(category) {
   const c = (category || '').toLowerCase();
   if (c === 'salary') return '6001';
@@ -48,6 +54,14 @@ function buildLines(tx, options = {}) {
   const explicitCredit = cleanAccountCode(options.creditAccount || tx.creditAccount);
 
   if (tx.type === 'income') {
+    if (isOwnerCapitalIncomeCategory(tx.category)) {
+      const debitAccount = explicitDebit || BANK;
+      const creditAccount = explicitCredit || '3001';
+      return [
+        { accountCode: debitAccount, debit: amt, description: 'Bank — owner capital contribution' },
+        { accountCode: creditAccount, credit: amt, description: desc },
+      ];
+    }
     const rev = mapIncomeAccount(tx.category);
     const useAr = tx.revenueRecognition === 'accrual_ar';
     const childAr = useAr && String(tx.receivableAccountCode || '').trim();
@@ -79,6 +93,7 @@ function buildLines(tx, options = {}) {
 
 function v3TransactionTypeForManual(tx) {
   if (tx.type === 'income') {
+    if (isOwnerCapitalIncomeCategory(tx.category)) return 'owner_investment';
     if (tx.revenueRecognition === 'accrual_ar') return 'booking_revenue';
     return 'other_income';
   }
