@@ -13,6 +13,7 @@ const {
   accountingDisclosureBalanceSheet,
 } = require('../services/financialStatementsV3Service');
 const { buildLegacyCashFlowDashboardResponse } = require('../services/cashFlowDashboardLegacyV3Service');
+const { amountRecognizedInIncomeStatementPeriod } = require('../utils/financeIncomeStatementPeriod');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -165,7 +166,9 @@ async function getIncomeStatementFromTransactions(startDate, endDate) {
       { type: 'income', category: { $in: ['booking', 'event'] } },
     ],
   })
-    .select('type category amount date description createdBy journalEntryId createdAt updatedAt booking guestBooking')
+    .select(
+      'type category amount date description createdBy journalEntryId financialJournalEntryId createdAt updatedAt booking guestBooking revenueRecognition'
+    )
     .populate('booking', 'checkIn checkOut eventDate type')
     .populate('guestBooking', 'checkIn checkOut')
     .lean();
@@ -177,62 +180,26 @@ async function getIncomeStatementFromTransactions(startDate, endDate) {
   let refunds = 0;
   const operatingExpenses = {};
 
-  const asDayStartUtc = (d) => {
-    const x = new Date(d);
-    x.setUTCHours(0, 0, 0, 0);
-    return x;
-  };
-
-  const checkInWithinPeriod = (checkIn, periodStart, periodEnd) => {
-    if (!checkIn) return false;
-    const ci = asDayStartUtc(checkIn);
-    const ps = asDayStartUtc(periodStart);
-    const pe = asDayStartUtc(periodEnd);
-    return ci >= ps && ci <= pe;
-  };
-
-  const amountRecognizedByStayWindow = (tx) => {
-    const amount = Number(tx.amount || 0);
-    if (!Number.isFinite(amount) || amount === 0) return 0;
-
-    const category = String(tx.category || '').toLowerCase();
-    const b = tx.booking || null;
-    const g = tx.guestBooking || null;
-
-    // Event revenue: recognize on event date.
-    if (category === 'event') {
-      const eventDate = b?.eventDate ? new Date(b.eventDate) : null;
-      if (eventDate && !Number.isNaN(eventDate.getTime())) {
-        return eventDate >= start && eventDate <= end ? amount : 0;
-      }
-      return tx.date >= start && tx.date <= end ? amount : 0;
-    }
-
-    // BnB revenue: include full transaction amount in the period of check-in.
-    if (category === 'booking') {
-      const checkIn = b?.checkIn || g?.checkIn;
-      if (checkIn) {
-        return checkInWithinPeriod(checkIn, start, end) ? amount : 0;
-      }
-      const effectiveDate = checkIn ? new Date(checkIn) : new Date(tx.date);
-      return effectiveDate >= start && effectiveDate <= end ? amount : 0;
-    }
-
-    return tx.date >= start && tx.date <= end ? amount : 0;
-  };
-
   for (const row of groupedRows) {
     const type = String(row.type || '').toLowerCase();
     const category = String(row.category || '').toLowerCase();
-    const total = amountRecognizedByStayWindow(row);
+    const total = amountRecognizedInIncomeStatementPeriod(row, start, end);
 
     if (type === 'income') {
-      if (category === 'booking') bnbRevenue += total;
-      else if (category === 'booking_payment') {
-        // Cash collection against receivables is not revenue for income statement presentation.
+      if (category === 'booking') {
+        const bk = row.booking;
+        const typ = bk && String(bk.type || '').toLowerCase();
+        if (typ === 'event') eventRevenue += total;
+        else bnbRevenue += total;
+      } else if (category === 'booking_payment') {
+        // Cash collections clear receivables — not booking revenue on this statement.
+      } else if (category === 'owner_investment' || category === 'capital_injection') {
+        // Owner capital — equity / financing; not P&L revenue.
+      } else if (category === 'event') {
+        eventRevenue += total;
+      } else {
+        otherIncome += total;
       }
-      else if (category === 'event') eventRevenue += total;
-      else otherIncome += total;
       continue;
     }
 
@@ -307,7 +274,7 @@ exports.getIncomeStatement = async (req, res) => {
           ...accountingDisclosureIncomeStatement(current.period),
           recognitionBasis: 'Transactions',
           description:
-            'Revenue and expenses are aggregated from transactions in the selected period. Booking payment collections (A/R settlements) are excluded from revenue.',
+            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
         },
         current: {
           presentation: shapeIncomeStatementPresentationV7(current),
@@ -397,7 +364,7 @@ exports.getPL = async (req, res) => {
           ...accountingDisclosureIncomeStatement(current.period),
           recognitionBasis: 'Transactions',
           description:
-            'Revenue and expenses are aggregated from transactions in the selected period. Booking payment collections (A/R settlements) are excluded from revenue.',
+            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
         },
         presentation: shapeIncomeStatementPresentationV7(current),
         ...current,

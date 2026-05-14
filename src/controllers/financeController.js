@@ -10,10 +10,13 @@ const transactionJournalService = require('../services/transactionJournalService
 const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
 const { attachLedgerEntriesToTransactions } = require('../services/transactionLedgerLinesService');
 const { withRoomPreview } = require('../utils/bookingPreview');
+const { incomeTxMatchesIncomeStatementPeriod } = require('../utils/financeIncomeStatementPeriod');
 
 const FINANCE_TX_MAX_LIMIT = 500;
 /** When filtering by GL account, scan recent rows in-range then filter in memory (cap for safety). */
 const FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP = 3000;
+/** P&L-aligned income lists use a broad Mongo match then filter by stay window (same cap). */
+const FINANCE_TX_PL_ALIGN_SCAN_CAP = FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP;
 
 function parseUtcStart(iso) {
   const s = String(iso || '').trim();
@@ -288,14 +291,66 @@ const getTransactions = asyncHandler(async (req, res) => {
   const mongoMatch = {};
   const stayDateMode4001 = Boolean((startRaw || endRaw) && accountCodeFilter === '4001');
 
-  if ((startRaw || endRaw) && !stayDateMode4001) {
+  const periodStartJs = startRaw ? parseUtcStart(startRaw) : null;
+  const periodEndJs = endRaw ? parseUtcEnd(endRaw) : null;
+  const periodStartFilter = periodStartJs || new Date('1970-01-01T00:00:00.000Z');
+  const periodEndFilter = periodEndJs || new Date('2999-12-31T23:59:59.999Z');
+
+  const typeNorm = String(req.query.type || '').trim().toLowerCase();
+  if (typeNorm === 'income' || typeNorm === 'expense') {
+    mongoMatch.type = typeNorm;
+  }
+
+  const includeAllIncome = ['1', 'true', 'yes'].includes(
+    String(req.query.includeAllIncome || '').trim().toLowerCase(),
+  );
+  const omitExplicit = String(req.query.omitNonRevenueIncome ?? '').trim().toLowerCase();
+  const omitByFlag = ['1', 'true', 'yes'].includes(
+    String(req.query.forIncomeStatement || '').trim().toLowerCase(),
+  );
+  let omitNonRevenueIncome = false;
+  if (['0', 'false', 'no'].includes(omitExplicit)) {
+    omitNonRevenueIncome = false;
+  } else if (['1', 'true', 'yes'].includes(omitExplicit) || omitByFlag) {
+    omitNonRevenueIncome = true;
+  } else if ((startRaw || endRaw) && !includeAllIncome) {
+    omitNonRevenueIncome = true;
+  }
+
+  const dateBasisRaw = String(req.query.dateBasis || '').trim().toLowerCase();
+  const dateBasisTransaction = dateBasisRaw === 'transaction' || dateBasisRaw === 'txn';
+
+  const incomePlPeriodAligned =
+    omitNonRevenueIncome &&
+    (startRaw || endRaw) &&
+    !dateBasisTransaction &&
+    !stayDateMode4001 &&
+    typeNorm !== 'expense';
+
+  const nonRevenueNor = {
+    type: 'income',
+    category: { $in: ['booking_payment', 'owner_investment', 'capital_injection'] },
+  };
+
+  if ((startRaw || endRaw) && !stayDateMode4001 && !incomePlPeriodAligned) {
     mongoMatch.date = {};
     if (startRaw) mongoMatch.date.$gte = parseUtcStart(startRaw);
     if (endRaw) mongoMatch.date.$lte = parseUtcEnd(endRaw);
   }
-  if (req.query.type === 'income' || req.query.type === 'expense') {
-    mongoMatch.type = req.query.type;
+
+  if (incomePlPeriodAligned) {
+    const orBranches = [];
+    const dateClause = /** @type {{ $gte?: Date; $lte?: Date }} */ ({});
+    if (startRaw) dateClause.$gte = parseUtcStart(startRaw);
+    if (endRaw) dateClause.$lte = parseUtcEnd(endRaw);
+    if (Object.keys(dateClause).length) orBranches.push({ date: dateClause });
+    orBranches.push({ category: { $in: ['booking', 'event'] } });
+    mongoMatch.$and = [{ $nor: [nonRevenueNor] }, { $or: orBranches }];
+  } else if (omitNonRevenueIncome && !incomePlPeriodAligned) {
+    mongoMatch.$nor = [nonRevenueNor];
   }
+
+  const useIncomePlAlignScan = incomePlPeriodAligned;
 
   const includeLedger =
     String(req.query.includeLedger ?? '1').toLowerCase() !== '0' &&
@@ -333,6 +388,20 @@ const getTransactions = asyncHandler(async (req, res) => {
       note:
         'Rows are scanned newest-first up to scanCap, filtered by resolved GL lines (embedded, legacy journal, or inferred), then paginated.',
     };
+  } else if (useIncomePlAlignScan) {
+    raw = await Transaction.find(mongoMatch)
+      .sort({ date: -1 })
+      .limit(FINANCE_TX_PL_ALIGN_SCAN_CAP)
+      .populate({
+        path: 'booking',
+        populate: { path: 'roomId', select: 'name type' },
+      })
+      .populate({
+        path: 'guestBooking',
+        populate: { path: 'roomId', select: 'name type' },
+      })
+      .lean();
+    total = 0;
   } else {
     [raw, total] = await Promise.all([
       Transaction.find(mongoMatch)
@@ -369,6 +438,20 @@ const getTransactions = asyncHandler(async (req, res) => {
     ? await attachLedgerEntriesToTransactions(data)
     : data.map((tx) => ({ ...tx, ledgerEntry: null }));
 
+  if (useIncomePlAlignScan && (startRaw || endRaw)) {
+    withLedger = withLedger.filter((tx) =>
+      incomeTxMatchesIncomeStatementPeriod(tx, periodStartFilter, periodEndFilter),
+    );
+  }
+
+  if (omitNonRevenueIncome) {
+    const excluded = new Set(['booking_payment', 'owner_investment', 'capital_injection']);
+    withLedger = withLedger.filter((tx) => {
+      if (String(tx.type || '').toLowerCase() !== 'income') return true;
+      return !excluded.has(String(tx.category || '').toLowerCase());
+    });
+  }
+
   if (stayDateMode4001 && (startRaw || endRaw)) {
     const periodStart = startRaw ? parseUtcStart(startRaw) : new Date('1970-01-01T00:00:00.000Z');
     const periodEnd = endRaw ? parseUtcEnd(endRaw) : new Date('2999-12-31T23:59:59.999Z');
@@ -392,6 +475,9 @@ const getTransactions = asyncHandler(async (req, res) => {
       totalRowsInPeriod: total,
     };
     total = filteredTotal;
+  } else if (useIncomePlAlignScan) {
+    total = withLedger.length;
+    withLedger = withLedger.slice(skip, skip + lim);
   }
 
   const withBalances = addRunningBalances(withLedger);
@@ -410,7 +496,11 @@ const getTransactions = asyncHandler(async (req, res) => {
   const drillParams = new URLSearchParams();
   if (startRaw) drillParams.set('start', String(startRaw).trim());
   if (endRaw) drillParams.set('end', String(endRaw).trim());
-  if (req.query.type === 'income' || req.query.type === 'expense') drillParams.set('type', String(req.query.type));
+  if (typeNorm === 'income' || typeNorm === 'expense') drillParams.set('type', typeNorm);
+  if (omitNonRevenueIncome) drillParams.set('omitNonRevenueIncome', '1');
+  if (includeAllIncome) drillParams.set('includeAllIncome', '1');
+  if (dateBasisTransaction) drillParams.set('dateBasis', 'transaction');
+  else if (incomePlPeriodAligned) drillParams.set('dateBasis', 'booking');
   drillParams.set('limit', String(Math.min(FINANCE_TX_MAX_LIMIT, 500)));
 
   const byAccount = includeByAccount ? buildByAccountDrillDown(withBalances, drillParams.toString()) : [];
@@ -438,6 +528,19 @@ const getTransactions = asyncHandler(async (req, res) => {
       accountCodeFilter: accountCodeFilter || null,
       accountFilter: accountFilterMeta,
       byAccount,
+      omitNonRevenueIncome,
+      excludedIncomeCategoriesWhenOmitting: omitNonRevenueIncome
+        ? ['booking_payment', 'owner_investment', 'capital_injection']
+        : undefined,
+      incomeStatementPeriodAligned: incomePlPeriodAligned || undefined,
+      dateBasis:
+        (startRaw || endRaw) && typeNorm !== 'expense'
+          ? incomePlPeriodAligned
+            ? 'booking'
+            : 'transaction'
+          : undefined,
+      includeAllIncome: includeAllIncome || undefined,
+      incomePlScanCap: useIncomePlAlignScan ? FINANCE_TX_PL_ALIGN_SCAN_CAP : undefined,
     },
   });
 });
