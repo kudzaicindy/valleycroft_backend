@@ -120,8 +120,8 @@ function buildByAccountDrillDown(rows, drillParamsNoAccount) {
         description: txDesc,
         type: txType,
         category: txCategory,
-        debit: Number(Number(L.debit || 0).toFixed(2)),
-        credit: Number(Number(L.credit || 0).toFixed(2)),
+        debit: Number(L.debit) || 0,
+        credit: Number(L.credit) || 0,
         lineDescription: L.description || '',
       });
     }
@@ -130,9 +130,9 @@ function buildByAccountDrillDown(rows, drillParamsNoAccount) {
   const accounts = [...byCode.values()]
     .map((a) => ({
       ...a,
-      debitTotal: Number(a.debitTotal.toFixed(2)),
-      creditTotal: Number(a.creditTotal.toFixed(2)),
-      net: Number((a.debitTotal - a.creditTotal).toFixed(2)),
+      debitTotal: a.debitTotal,
+      creditTotal: a.creditTotal,
+      net: a.debitTotal - a.creditTotal,
       lineCount: a.drillDown.lines.length,
       drillDownUrl: `/api/finance/transactions?${baseQs}${baseQs ? '&' : ''}accountCode=${encodeURIComponent(a.accountCode)}`,
     }))
@@ -241,9 +241,9 @@ function addRunningBalances(rows) {
     creditBalance += Number(tx.credit) || 0;
     return {
       ...tx,
-      debitBalance: Number(debitBalance.toFixed(2)),
-      creditBalance: Number(creditBalance.toFixed(2)),
-      netBalance: Number((creditBalance - debitBalance).toFixed(2)),
+      debitBalance,
+      creditBalance,
+      netBalance: creditBalance - debitBalance,
     };
   });
 }
@@ -553,9 +553,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     },
     { debit: 0, credit: 0 },
   );
-  totals.net = Number((totals.credit - totals.debit).toFixed(2));
-  totals.debit = Number(totals.debit.toFixed(2));
-  totals.credit = Number(totals.credit.toFixed(2));
+  totals.net = totals.credit - totals.debit;
 
   const drillParams = new URLSearchParams();
   if (startRaw) drillParams.set('start', String(startRaw).trim());
