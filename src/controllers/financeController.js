@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Transaction = require('../models/Transaction');
+const Expense = require('../models/Expense');
 const GuestBooking = require('../models/GuestBooking');
 const Salary = require('../models/Salary');
 const User = require('../models/User');
@@ -12,11 +13,15 @@ const { attachLedgerEntriesToTransactions } = require('../services/transactionLe
 const { withRoomPreview } = require('../utils/bookingPreview');
 const { incomeTxMatchesIncomeStatementPeriod } = require('../utils/financeIncomeStatementPeriod');
 
-const FINANCE_TX_MAX_LIMIT = 500;
 /** When filtering by GL account, scan recent rows in-range then filter in memory (cap for safety). */
 const FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP = 3000;
 /** P&L-aligned income lists use a broad Mongo match then filter by stay window (same cap). */
 const FINANCE_TX_PL_ALIGN_SCAN_CAP = FINANCE_TX_ACCOUNT_FILTER_SCAN_CAP;
+
+/** Finance transactions list returns all matching rows (no pagination). */
+function parseFinanceTransactionsLimit() {
+  return { paginate: false, limit: null };
+}
 
 function parseUtcStart(iso) {
   const s = String(iso || '').trim();
@@ -258,6 +263,31 @@ function bookingCheckInWithinPeriod(tx, periodStart, periodEnd) {
   return ci >= ps && ci <= pe;
 }
 
+/** Operational worker pays stored as `Expense` (no linked `Transaction`) — shape for finance list merge. */
+function standaloneWorkerExpenseToTxShape(doc) {
+  const amt = Math.abs(Number(doc?.amount) || 0);
+  return {
+    _id: doc._id,
+    recordSource: 'standalone_expense',
+    type: 'expense',
+    category: 'worker_payment',
+    amount: amt,
+    date: doc.date,
+    description: doc.description || 'Worker payment',
+    reference: doc.reference || undefined,
+    source: 'worker_expense',
+    createdBy: doc.createdBy,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+    financialJournalEntryId: doc.financialJournalEntryId || undefined,
+    expenseKind: doc.expenseKind,
+    paymentMethod: doc.paymentMethod,
+    staff: doc.staff,
+    supplier: doc.supplier,
+    lines: [],
+  };
+}
+
 async function leanTransactionWithBookingPreview(txId) {
   const doc = await Transaction.findById(txId)
     .populate({
@@ -279,8 +309,8 @@ async function leanTransactionWithBookingPreview(txId) {
 
 const getTransactions = asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const lim = Math.min(FINANCE_TX_MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || 20));
-  const skip = (page - 1) * lim;
+  const { paginate, limit: lim } = parseFinanceTransactionsLimit();
+  const skip = paginate && lim != null ? (page - 1) * lim : 0;
 
   const startRaw = req.query.start || req.query.startDate;
   const endRaw = req.query.end || req.query.endDate;
@@ -344,13 +374,26 @@ const getTransactions = asyncHandler(async (req, res) => {
     if (startRaw) dateClause.$gte = parseUtcStart(startRaw);
     if (endRaw) dateClause.$lte = parseUtcEnd(endRaw);
     if (Object.keys(dateClause).length) orBranches.push({ date: dateClause });
-    orBranches.push({ category: { $in: ['booking', 'event'] } });
+    orBranches.push({ type: 'income', category: { $in: ['booking', 'event'] } });
     mongoMatch.$and = [{ $nor: [nonRevenueNor] }, { $or: orBranches }];
   } else if (omitNonRevenueIncome && !incomePlPeriodAligned) {
     mongoMatch.$nor = [nonRevenueNor];
   }
 
   const useIncomePlAlignScan = incomePlPeriodAligned;
+
+  /** Merge operational worker pays (`Expense`, not `Transaction`) whenever list is not income-only. */
+  const mergeStandaloneWorkerPayments = typeNorm !== 'income' && !accountCodeFilter;
+
+  let standaloneWorkerExpenseRowsMerged = 0;
+
+  const workerExpenseMongoFilter = {
+    expenseKind: 'worker_payment',
+    $or: [{ transaction: null }, { transaction: { $exists: false } }],
+  };
+  if (startRaw || endRaw) {
+    workerExpenseMongoFilter.date = { $gte: periodStartFilter, $lte: periodEndFilter };
+  }
 
   const includeLedger =
     String(req.query.includeLedger ?? '1').toLowerCase() !== '0' &&
@@ -388,26 +431,43 @@ const getTransactions = asyncHandler(async (req, res) => {
       note:
         'Rows are scanned newest-first up to scanCap, filtered by resolved GL lines (embedded, legacy journal, or inferred), then paginated.',
     };
-  } else if (useIncomePlAlignScan) {
-    raw = await Transaction.find(mongoMatch)
-      .sort({ date: -1 })
-      .limit(FINANCE_TX_PL_ALIGN_SCAN_CAP)
-      .populate({
-        path: 'booking',
-        populate: { path: 'roomId', select: 'name type' },
-      })
-      .populate({
-        path: 'guestBooking',
-        populate: { path: 'roomId', select: 'name type' },
-      })
-      .lean();
-    total = 0;
-  } else {
-    [raw, total] = await Promise.all([
+  } else if (useIncomePlAlignScan || mergeStandaloneWorkerPayments) {
+    const workerFetch = mergeStandaloneWorkerPayments
+      ? Expense.find(workerExpenseMongoFilter)
+          .sort({ date: -1 })
+          .limit(FINANCE_TX_PL_ALIGN_SCAN_CAP)
+          .populate('staff', 'name email')
+          .lean()
+          .then((docs) => docs.map(standaloneWorkerExpenseToTxShape))
+      : Promise.resolve([]);
+    const [txRows, workerShapes] = await Promise.all([
       Transaction.find(mongoMatch)
         .sort({ date: -1 })
-        .skip(skip)
-        .limit(lim)
+        .limit(FINANCE_TX_PL_ALIGN_SCAN_CAP)
+        .populate({
+          path: 'booking',
+          populate: { path: 'roomId', select: 'name type' },
+        })
+        .populate({
+          path: 'guestBooking',
+          populate: { path: 'roomId', select: 'name type' },
+        })
+        .lean(),
+      workerFetch,
+    ]);
+    standaloneWorkerExpenseRowsMerged = workerShapes.length;
+    raw = [...txRows, ...workerShapes];
+    raw.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    total = 0;
+  } else {
+    let txQuery = Transaction.find(mongoMatch).sort({ date: -1 });
+    if (paginate && lim != null) {
+      txQuery = txQuery.skip(skip).limit(lim);
+    } else {
+      txQuery = txQuery.limit(FINANCE_TX_PL_ALIGN_SCAN_CAP);
+    }
+    [raw, total] = await Promise.all([
+      txQuery
         .populate({
           path: 'booking',
           populate: { path: 'roomId', select: 'name type' },
@@ -468,16 +528,20 @@ const getTransactions = asyncHandler(async (req, res) => {
       getLedgerStyleLinesForTransaction(tx).some((l) => String(l.accountCode) === accountCodeFilter),
     );
     const filteredTotal = withLedger.length;
-    withLedger = withLedger.slice(skip, skip + lim);
+    if (paginate && lim != null) {
+      withLedger = withLedger.slice(skip, skip + lim);
+    }
     accountFilterMeta = {
       ...accountFilterMeta,
       matchingRows: filteredTotal,
       totalRowsInPeriod: total,
     };
     total = filteredTotal;
-  } else if (useIncomePlAlignScan) {
+  } else if (useIncomePlAlignScan || mergeStandaloneWorkerPayments) {
     total = withLedger.length;
-    withLedger = withLedger.slice(skip, skip + lim);
+    if (paginate && lim != null) {
+      withLedger = withLedger.slice(skip, skip + lim);
+    }
   }
 
   const withBalances = addRunningBalances(withLedger);
@@ -501,7 +565,7 @@ const getTransactions = asyncHandler(async (req, res) => {
   if (includeAllIncome) drillParams.set('includeAllIncome', '1');
   if (dateBasisTransaction) drillParams.set('dateBasis', 'transaction');
   else if (incomePlPeriodAligned) drillParams.set('dateBasis', 'booking');
-  drillParams.set('limit', String(Math.min(FINANCE_TX_MAX_LIMIT, 500)));
+  if (paginate && lim != null) drillParams.set('limit', String(lim));
 
   const byAccount = includeByAccount ? buildByAccountDrillDown(withBalances, drillParams.toString()) : [];
 
@@ -510,8 +574,9 @@ const getTransactions = asyncHandler(async (req, res) => {
     data: withBalances,
     meta: {
       apiPath: '/api/finance/transactions',
-      page,
-      limit: lim,
+      page: paginate ? page : 1,
+      limit: paginate && lim != null ? lim : null,
+      paginate,
       total,
       totals,
       duplicateRowsCollapsed,
@@ -541,6 +606,17 @@ const getTransactions = asyncHandler(async (req, res) => {
           : undefined,
       includeAllIncome: includeAllIncome || undefined,
       incomePlScanCap: useIncomePlAlignScan ? FINANCE_TX_PL_ALIGN_SCAN_CAP : undefined,
+      standaloneWorkerExpenseRowsMerged:
+        mergeStandaloneWorkerPayments && standaloneWorkerExpenseRowsMerged > 0
+          ? standaloneWorkerExpenseRowsMerged
+          : undefined,
+      noteStandaloneWorkerPayments:
+        mergeStandaloneWorkerPayments
+          ? 'Rows from operational Expenses (`expenseKind: worker_payment`) without a linked finance Transaction are merged here as `category: worker_payment`, `recordSource: standalone_expense`. Edit/delete via the expenses API.'
+          : undefined,
+      hasMore: paginate && lim != null ? total > page * lim : false,
+      notePagination: `All ${total} matching rows returned (limit query param ignored). Safety cap: ${FINANCE_TX_PL_ALIGN_SCAN_CAP} transactions.`,
+      limitIgnored: req.query.limit != null && String(req.query.limit).trim() !== '' ? true : undefined,
     },
   });
 });

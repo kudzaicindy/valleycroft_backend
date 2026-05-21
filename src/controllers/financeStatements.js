@@ -3,6 +3,7 @@
 
 const FinancialJournalEntry = require('../models/FinancialJournalEntry');
 const Transaction = require('../models/Transaction');
+const Expense = require('../models/Expense');
 const {
   getIncomeStatementV3,
   getCashFlowV3,
@@ -160,18 +161,27 @@ function collapseTransactionDuplicateRows(rows) {
 async function getIncomeStatementFromTransactions(startDate, endDate) {
   const start = new Date(startDate);
   const end = new Date(endDate);
-  const rows = await Transaction.find({
-    $or: [
-      { date: { $gte: start, $lte: end } },
-      { type: 'income', category: { $in: ['booking', 'event'] } },
-    ],
-  })
-    .select(
-      'type category amount date description createdBy journalEntryId financialJournalEntryId createdAt updatedAt booking guestBooking revenueRecognition'
-    )
-    .populate('booking', 'checkIn checkOut eventDate type')
-    .populate('guestBooking', 'checkIn checkOut')
-    .lean();
+  const [rows, standaloneWorkerPayments] = await Promise.all([
+    Transaction.find({
+      $or: [
+        { date: { $gte: start, $lte: end } },
+        { type: 'income', category: { $in: ['booking', 'event'] } },
+      ],
+    })
+      .select(
+        'type category amount date description createdBy journalEntryId financialJournalEntryId createdAt updatedAt booking guestBooking revenueRecognition'
+      )
+      .populate('booking', 'checkIn checkOut eventDate type')
+      .populate('guestBooking', 'checkIn checkOut')
+      .lean(),
+    Expense.find({
+      expenseKind: 'worker_payment',
+      date: { $gte: start, $lte: end },
+      $or: [{ transaction: null }, { transaction: { $exists: false } }],
+    })
+      .select('amount')
+      .lean(),
+  ]);
   const groupedRows = collapseTransactionDuplicateRows(rows);
 
   let bnbRevenue = 0;
@@ -211,6 +221,14 @@ async function getIncomeStatementFromTransactions(startDate, endDate) {
         operatingExpenses[label] = Number((operatingExpenses[label] || 0) + total);
       }
     }
+  }
+
+  /** Operational worker pays recorded only on `Expense` (no mirrored `Transaction`) still belong in operating expenses. */
+  const workerPayLabel = titleCaseCategory('worker_payment');
+  for (const er of standaloneWorkerPayments || []) {
+    const a = Number(er.amount || 0);
+    if (!Number.isFinite(a) || a <= 0) continue;
+    operatingExpenses[workerPayLabel] = Number((operatingExpenses[workerPayLabel] || 0) + a);
   }
 
   const grossRevenue = bnbRevenue + eventRevenue + otherIncome;
@@ -274,7 +292,7 @@ exports.getIncomeStatement = async (req, res) => {
           ...accountingDisclosureIncomeStatement(current.period),
           recognitionBasis: 'Transactions',
           description:
-            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
+            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. Worker/task payments recorded as operational Expenses (`expenseKind: worker_payment`) without a linked finance `Transaction` are included in operating expenses. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
         },
         current: {
           presentation: shapeIncomeStatementPresentationV7(current),
@@ -364,7 +382,7 @@ exports.getPL = async (req, res) => {
           ...accountingDisclosureIncomeStatement(current.period),
           recognitionBasis: 'Transactions',
           description:
-            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
+            'BnB/event revenue uses confirmed booking accrual lines (`category: booking` / `event`) attributed to the stay or event window (check-in / event date), not payment dates. `booking_payment` rows settle receivables and are excluded from revenue here. Owner capital (`owner_investment`) is excluded. Worker/task payments recorded as operational Expenses (`expenseKind: worker_payment`) without a linked finance `Transaction` are included in operating expenses. For cash collections and GL account detail, use the v3 cash-flow / ledger views.',
         },
         presentation: shapeIncomeStatementPresentationV7(current),
         ...current,

@@ -35,6 +35,7 @@ function isOwnerCapitalIncomeCategory(category) {
 function mapExpenseAccount(category) {
   const c = (category || '').toLowerCase();
   if (c === 'salary') return '6001';
+  if (c === 'worker_payment' || c === 'staff_task') return '6002';
   if (c === 'utilities') return '6020';
   if (c === 'marketing') return '6022';
   if (c === 'supplies') return '5001';
@@ -99,6 +100,7 @@ function v3TransactionTypeForManual(tx) {
   }
   const c = (tx.category || '').toLowerCase();
   if (c === 'salary') return 'salary_payment';
+  if (c === 'worker_payment' || c === 'staff_task') return 'staff_task_payment';
   if (c === 'utilities') return 'utility_payment';
   if (c === 'supplier') return 'supplier_payment';
   if (c === 'supplies') return 'consumables_purchase';
