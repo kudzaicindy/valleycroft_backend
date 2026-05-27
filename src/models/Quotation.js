@@ -45,13 +45,13 @@ quotationSchema.pre('validate', function (next) {
   const computedSubtotal = lineItems.reduce((sum, item) => {
     const qty = Number(item.qty) || 0;
     const unitPrice = Number(item.unitPrice) || 0;
-    item.total = Number((qty * unitPrice).toFixed(2));
+    item.total = qty * unitPrice;
     return sum + item.total;
   }, 0);
-  this.subtotal = Number(computedSubtotal.toFixed(2));
+  this.subtotal = computedSubtotal;
   const tax = Number(this.tax) || 0;
-  this.tax = Number(tax.toFixed(2));
-  this.total = Number((this.subtotal + this.tax).toFixed(2));
+  this.tax = tax;
+  this.total = this.subtotal + this.tax;
   next();
 });
 
