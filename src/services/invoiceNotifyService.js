@@ -159,6 +159,26 @@ function isConnectivityError(err) {
   );
 }
 
+function mailFailureHint(errorMessage) {
+  const msg = String(errorMessage || '').toLowerCase();
+  if (msg.includes('invalid_grant')) {
+    return (
+      'Gmail OAuth refresh token rejected (invalid_grant). Regenerate GMAIL_REFRESH_TOKEN in Google OAuth Playground ' +
+      'using the same GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET as in .env, with redirect ' +
+      'https://developers.google.com/oauthplayground (or set GMAIL_OAUTH_REDIRECT_URI). ' +
+      'Alternatively use GMAIL_APP_PASSWORD (2FA app password) and remove OAuth vars.'
+    );
+  }
+  if (msg.includes('insufficient authentication scopes') || msg.includes('insufficient permission')) {
+    return (
+      'Gmail OAuth token lacks send scope. In OAuth Playground, authorize ' +
+      'https://www.googleapis.com/auth/gmail.send or https://mail.google.com/ ' +
+      'then exchange tokens and update GMAIL_REFRESH_TOKEN in .env.'
+    );
+  }
+  return smtpFailureDeployHint(errorMessage);
+}
+
 /** Explain SMTP timeouts on hosts that block outbound mail ports (e.g. Render free tier). */
 function smtpFailureDeployHint(errorMessage) {
   const msg = String(errorMessage || '').toLowerCase();
@@ -291,7 +311,7 @@ async function verifyMailConnection() {
       skipped: false,
       summary,
       error: errorText,
-      deployHint: smtpFailureDeployHint(errorText),
+      deployHint: mailFailureHint(errorText),
     };
   }
 }

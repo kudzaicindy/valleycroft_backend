@@ -96,7 +96,7 @@ async function main() {
       console.log('Transport: Gmail OAuth → Gmail API (HTTPS only; works when SMTP ports are blocked)');
       try {
         await verifyGmailApiConnection();
-        console.log('Verify: OK (Gmail API profile reachable).\n');
+        console.log('Verify: OK (Gmail OAuth access token refreshed).\n');
       } catch (err) {
         console.error('Verify: FAILED');
         console.error('  ', err.message);
@@ -104,6 +104,17 @@ async function main() {
           console.error(
             '\n  invalid_grant usually means: wrong/expired refresh token, or token was issued for a different client id/secret.\n' +
               '  Fix: generate a new refresh token in OAuth Playground using THIS client id + secret.\n',
+          );
+        }
+        if (
+          String(err.message).includes('insufficient authentication scopes') ||
+          String(err.message).includes('insufficient permission')
+        ) {
+          console.error(
+            '\n  Token is missing gmail.send. In OAuth Playground Step 1, select:\n' +
+              '    https://www.googleapis.com/auth/gmail.send\n' +
+              '  or https://mail.google.com/\n' +
+              '  then re-authorize and exchange tokens.\n',
           );
         }
         if (String(err.code || err.response?.status) === '403' || String(err.message).includes('accessNotConfigured')) {

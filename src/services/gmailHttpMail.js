@@ -54,9 +54,16 @@ async function buildRawMimeBuffer(mailOptions) {
   return info.message;
 }
 
+/**
+ * Verify OAuth credentials (refresh token → access token).
+ * Uses getAccessToken only — gmail.send scope is enough for sending but not users.getProfile.
+ */
 async function verifyGmailApiConnection() {
-  const gmail = google.gmail({ version: 'v1', auth: getGmailOAuth2Client() });
-  await gmail.users.getProfile({ userId: 'me' });
+  const auth = getGmailOAuth2Client();
+  const { token } = await auth.getAccessToken();
+  if (!token) {
+    throw new Error('Gmail OAuth refresh did not return an access token');
+  }
 }
 
 /**
