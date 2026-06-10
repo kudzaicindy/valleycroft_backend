@@ -148,6 +148,16 @@ const sendInvoice = asyncHandler(async (req, res) => {
   const invoice = await Invoice.findById(req.params.id).lean();
   if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
   const details = await loadInvoiceContacts(invoice);
+  const linkedInternalBooking =
+    invoice.relatedTo &&
+    (await Booking.findById(invoice.relatedTo).select('_id').lean());
+  if (linkedInternalBooking) {
+    return res.status(400).json({
+      success: false,
+      message:
+        'Invoices for staff/internal bookings are not sent to guests. Admin is notified when the booking is created.',
+    });
+  }
   const channels = Array.isArray(req.body.channels) ? req.body.channels : ['email', 'whatsapp'];
   const payload = {
     guestName: req.body.guestName || details.guestName || 'Guest',
@@ -159,6 +169,8 @@ const sendInvoice = asyncHandler(async (req, res) => {
     dueDate: invoice.dueDate,
     lineItems: invoice.lineItems || [],
     trackingCode: details.trackingCode || undefined,
+    relatedModel: 'GuestBooking',
+    relatedId: invoice.relatedTo,
   };
   const results = await sendInvoiceDeliveryNow(payload, { channels });
   await logAudit({

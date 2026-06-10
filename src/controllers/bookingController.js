@@ -3,6 +3,7 @@ const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const { withRoomPreviewMany, withRoomPreview } = require('../utils/bookingPreview');
 const bookingRevenueService = require('../services/bookingRevenueService');
+const { scheduleInternalBookingCreatedAdmin } = require('../services/invoiceNotifyService');
 const { isRoomAvailableForDates } = require('../utils/availability');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -169,6 +170,7 @@ const create = asyncHandler(async (req, res) => {
   });
   const created = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
   const preview = withRoomPreview(created);
+  scheduleInternalBookingCreatedAdmin(preview);
   res.status(201).json({ success: true, data: preview });
 });
 

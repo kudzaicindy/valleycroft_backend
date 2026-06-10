@@ -54,12 +54,16 @@ function whatsappConfigured() {
   return !!(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
 }
 
-/** Comma-separated admin inboxes for new guest booking alerts */
+/** Comma-separated admin inboxes for new guest / internal booking alerts */
 function adminBookingNotifyEmails() {
-  const raw = process.env.BOOKING_ADMIN_EMAIL || process.env.BOOKING_NOTIFY_EMAIL || '';
+  const raw =
+    process.env.BOOKING_ADMIN_EMAIL ||
+    process.env.BOOKING_NOTIFY_EMAIL ||
+    process.env.GMAIL_USER ||
+    '';
   return raw
     .split(',')
-    .map((e) => e.trim())
+    .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
 }
 
@@ -424,7 +428,15 @@ async function sendMail({ to, subject, html, text, templateKey, relatedModel, re
   }
 }
 
+/** Staff/dashboard `Booking` records: never email or WhatsApp the guest — admin alerts only. */
+function isInternalBookingMailContext(payload) {
+  return String(payload?.relatedModel || '').trim() === 'Booking';
+}
+
 async function deliverInvoiceEmail(payload) {
+  if (isInternalBookingMailContext(payload)) {
+    return { skipped: true, reason: 'internal_booking_guest_email_disabled', channel: 'email' };
+  }
   const to = (payload.email || '').trim();
   const { html, text } = mailTemplates.bookingConfirmedInvoiceGuest(payload);
   const biz = mailTemplates.bizName();
@@ -582,6 +594,9 @@ async function graphSendMessage(messageBody) {
 }
 
 async function deliverInvoiceWhatsApp(payload) {
+  if (isInternalBookingMailContext(payload)) {
+    return { skipped: true, reason: 'internal_booking_guest_whatsapp_disabled', channel: 'whatsapp' };
+  }
   const raw = payload.phone;
   const to = normalizeWhatsAppPhone(raw);
   if (!to || !whatsappConfigured()) {
@@ -714,7 +729,7 @@ function scheduleNewGuestBookingEmails(payload) {
 }
 
 /**
- * After staff creates an internal Booking (any status): notify admins.
+ * After staff creates an internal Booking (any status): notify admins only (never the guest).
  * @param {Record<string, unknown>} bookingLean - populated room, from withRoomPreview
  */
 function scheduleInternalBookingCreatedAdmin(bookingLean) {

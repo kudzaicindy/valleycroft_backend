@@ -235,7 +235,7 @@ async function onInternalBookingConfirmed(b, userId) {
   b.invoiceId = invoice._id;
   await b.save();
 
-  // Internal booking invoices are records-only: do not send any email notifications.
+  // Internal bookings: no guest email/WhatsApp (admin alert only, on create via scheduleInternalBookingCreatedAdmin).
 
   return {
     debtorId: debtor._id,
