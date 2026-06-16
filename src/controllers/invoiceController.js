@@ -5,6 +5,7 @@ const PDFDocument = require('pdfkit');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const { sendInvoiceDeliveryNow, normalizeWhatsAppPhone } = require('../services/invoiceNotifyService');
+const { guestPayNowPageUrl } = require('../services/payfastService');
 
 function formatMoney(n) {
   const v = Number(n) || 0;
@@ -27,6 +28,8 @@ async function loadInvoiceContacts(invoice) {
     roomName: rel.roomId?.name || null,
     roomType: rel.roomId?.type || null,
     trackingCode: rel.trackingCode || null,
+    checkIn: rel.checkIn || null,
+    checkOut: rel.checkOut || null,
   };
 }
 
@@ -159,16 +162,25 @@ const sendInvoice = asyncHandler(async (req, res) => {
     });
   }
   const channels = Array.isArray(req.body.channels) ? req.body.channels : ['email', 'whatsapp'];
+  const stayTotal = Number(invoice.total) || 0;
   const payload = {
     guestName: req.body.guestName || details.guestName || 'Guest',
     email: req.body.email || details.guestEmail || '',
     phone: req.body.phone || details.guestPhone || '',
     invoiceNumber: invoice.invoiceNumber,
-    total: invoice.total,
+    total: stayTotal,
+    deposit: stayTotal,
+    balanceDue: 0,
     notes: invoice.notes,
     dueDate: invoice.dueDate,
     lineItems: invoice.lineItems || [],
     trackingCode: details.trackingCode || undefined,
+    checkIn: details.checkIn || undefined,
+    checkOut: details.checkOut || undefined,
+    payNowUrl: guestPayNowPageUrl(
+      req.body.email || details.guestEmail,
+      details.trackingCode,
+    ),
     relatedModel: 'GuestBooking',
     relatedId: invoice.relatedTo,
   };

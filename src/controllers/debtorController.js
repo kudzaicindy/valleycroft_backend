@@ -1,10 +1,7 @@
 const Debtor = require('../models/Debtor');
-const DebtorPayment = require('../models/DebtorPayment');
-const Transaction = require('../models/Transaction');
-const Account = require('../models/Account');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
-const financialGlPostingService = require('../services/financialGlPostingService');
+const { recordDebtorPayment } = require('../services/debtorPaymentService');
 const { withRoomPreview } = require('../utils/bookingPreview');
 const DEBTOR_UPDATE_FIELDS = [
   'name',
@@ -96,12 +93,6 @@ const pendingBookings = asyncHandler(async (req, res) => {
   });
 });
 
-function debtorStatusFor(owed, paid) {
-  if (paid <= 0) return 'outstanding';
-  if (paid >= owed) return 'paid';
-  return 'partial';
-}
-
 const recordPayment = asyncHandler(async (req, res) => {
   const debtor = await Debtor.findById(req.params.id);
   if (!debtor) return res.status(404).json({ success: false, message: 'Debtor not found' });
@@ -111,115 +102,30 @@ const recordPayment = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: 'amount must be a positive number' });
   }
 
-  const owed = Number(debtor.amountOwed) || 0;
-  const paid = Number(debtor.amountPaid) || 0;
-  const remaining = Math.max(0, owed - paid);
-  if (amount > remaining) {
-    return res.status(400).json({
-      success: false,
-      message: `Payment exceeds remaining balance (${remaining})`,
-      meta: { remaining },
-    });
-  }
-
   const before = debtor.toObject();
   const paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
   const method = String(req.body.method || 'cash').trim().toLowerCase();
   const reference = req.body.reference ? String(req.body.reference).trim() : '';
   const note = req.body.note ? String(req.body.note).trim() : '';
-  const amountPaidAfter = paid + amount;
-  const remainingAfter = Math.max(0, owed - amountPaidAfter);
 
-  let payment;
-  let tx;
-  let je;
+  let result;
   try {
-    payment = await DebtorPayment.create({
-      debtorId: debtor._id,
-      bookingRef: debtor.bookingRef,
-      guestBookingRef: debtor.guestBookingRef,
+    result = await recordDebtorPayment(debtor._id, {
       amount,
       paidAt,
       method,
       reference,
       note,
-      amountOwedBefore: owed,
-      amountPaidBefore: paid,
-      amountPaidAfter,
-      remainingAfter,
       createdBy: req.user._id,
     });
-
-    tx = await Transaction.create({
-      type: 'income',
-      category: 'booking_payment',
-      amount,
-      date: paidAt,
-      description: `Payment received — ${debtor.name || 'Debtor'} (${method})`,
-      reference: reference || `PAY:${payment._id}`,
-      booking: debtor.bookingRef || undefined,
-      guestBooking: debtor.guestBookingRef || undefined,
-      source: 'debtor_payment',
-      revenueRecognition: 'cash',
-      createdBy: req.user._id,
-    });
-
-    const [bankAcc, arAcc] = await Promise.all([
-      Account.findOne({ code: '1001' }).select('_id code name').lean(),
-      Account.findOne({ code: '1010' }).select('_id code name').lean(),
-    ]);
-    if (!bankAcc || !arAcc) {
-      throw new Error('Missing chart accounts for booking payment posting (1001 and/or 1010)');
-    }
-
-    je = await financialGlPostingService.postBookingPaymentAgainstArV3(
-      debtor,
-      amount,
-      req.user._id,
-      { journalDate: paidAt, reference: tx.reference }
-    );
-
-    tx.financialJournalEntryId = je._id;
-    tx.lines = [
-      {
-        accountId: bankAcc._id,
-        accountCode: bankAcc.code,
-        accountName: bankAcc.name,
-        debit: amount,
-        credit: 0,
-        description: 'Bank — booking payment received',
-      },
-      {
-        accountId: arAcc._id,
-        accountCode: arAcc.code,
-        accountName: arAcc.name,
-        debit: 0,
-        credit: amount,
-        description: 'Accounts receivable cleared',
-      },
-    ];
-    await tx.save();
-
-    payment.transactionId = tx._id;
-    payment.financialJournalEntryId = je._id;
-    await payment.save();
-
-    debtor.amountPaid = amountPaidAfter;
-    debtor.status = debtorStatusFor(owed, debtor.amountPaid);
-    if (note) {
-      const line = `[payment ${paidAt.toISOString()}] ${note}`;
-      debtor.notes = debtor.notes ? `${debtor.notes}\n${line}` : line;
-    }
-    await debtor.save();
   } catch (err) {
-    if (tx?._id) await Transaction.findByIdAndDelete(tx._id);
-    if (payment?._id) await DebtorPayment.findByIdAndDelete(payment._id);
-    debtor.amountPaid = paid;
-    debtor.status = before.status;
-    debtor.notes = before.notes;
-    await debtor.save();
-    throw err;
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Could not record payment',
+    });
   }
+
+  const { debtor: updated, payment, transaction: tx, financialJournalEntryId, meta } = result;
 
   await logAudit({
     userId: req.user._id,
@@ -228,13 +134,13 @@ const recordPayment = asyncHandler(async (req, res) => {
     entity: 'Debtor',
     entityId: debtor._id,
     before,
-    after: debtor.toObject(),
+    after: updated.toObject(),
     req,
   });
 
   res.json({
     success: true,
-    data: debtor,
+    data: updated,
     related: {
       payment: {
         _id: payment._id,
@@ -256,11 +162,10 @@ const recordPayment = asyncHandler(async (req, res) => {
       },
     },
     meta: {
-      paidNow: amount,
-      remaining: Math.max(0, (Number(debtor.amountOwed) || 0) - (Number(debtor.amountPaid) || 0)),
+      ...meta,
       paymentId: payment._id,
       transactionId: tx._id,
-      financialJournalEntryId: je._id,
+      financialJournalEntryId,
     },
   });
 });

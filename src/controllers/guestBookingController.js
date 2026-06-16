@@ -75,11 +75,11 @@ const createGuestBooking = asyncHandler(async (req, res) => {
   if (!Number.isFinite(totalAmount) || totalAmount < 0) {
     return res.status(400).json({ success: false, message: 'Calculated totalAmount is invalid' });
   }
-  const depositRaw = req.body.deposit != null ? Number(req.body.deposit) : totalAmount * 0.3;
+  const depositRaw = req.body.deposit != null ? Number(req.body.deposit) : totalAmount;
   if (!Number.isFinite(depositRaw) || depositRaw < 0) {
     return res.status(400).json({ success: false, message: 'deposit must be a valid non-negative number' });
   }
-  const deposit = depositRaw;
+  const deposit = Math.min(depositRaw, totalAmount);
 
   const booking = await GuestBooking.create({
     guestName,

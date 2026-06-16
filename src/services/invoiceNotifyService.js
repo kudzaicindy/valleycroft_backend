@@ -3,7 +3,9 @@
  * Misconfiguration or provider errors are logged; they do not fail API responses.
  */
 const nodemailer = require('nodemailer');
+const GuestBooking = require('../models/GuestBooking');
 const mailTemplates = require('./mailTemplates');
+const { guestPayNowPageUrl } = require('./payfastService');
 const { logOutboundEmail } = require('./emailLogService');
 const gmailHttpMail = require('./gmailHttpMail');
 
@@ -433,12 +435,66 @@ function isInternalBookingMailContext(payload) {
   return String(payload?.relatedModel || '').trim() === 'Booking';
 }
 
+/** Ensure confirmation emails always have deposit, dates, and pay link for the template. */
+async function normalizeConfirmationEmailPayload(payload = {}) {
+  let total = Number(payload.total) || mailTemplates.invoiceGrandTotal(payload) || 0;
+  let deposit = confirmationDepositFromPayload(payload, total);
+  let checkIn = payload.checkIn;
+  let checkOut = payload.checkOut;
+  let trackingCode = payload.trackingCode;
+
+  if (
+    payload.relatedId &&
+    String(payload.relatedModel || '').trim() === 'GuestBooking'
+  ) {
+    const gb = await GuestBooking.findById(payload.relatedId)
+      .select('totalAmount deposit checkIn checkOut trackingCode guestEmail')
+      .lean();
+    if (gb) {
+      const gbTotal = Number(gb.totalAmount) || 0;
+      if (gbTotal > 0) total = gbTotal;
+      if (!checkIn) checkIn = gb.checkIn;
+      if (!checkOut) checkOut = gb.checkOut;
+      if (!trackingCode) trackingCode = gb.trackingCode;
+      if (deposit <= 0) deposit = total;
+      if (Number(gb.deposit) !== total && total > 0) {
+        await GuestBooking.findByIdAndUpdate(gb._id, { deposit: total });
+      }
+    }
+  }
+
+  if (deposit <= 0 && total > 0) deposit = total;
+
+  return {
+    ...payload,
+    total,
+    deposit,
+    balanceDue: 0,
+    checkIn,
+    checkOut,
+    trackingCode,
+    payNowUrl:
+      (payload.payNowUrl && String(payload.payNowUrl).trim()) ||
+      guestPayNowPageUrl(payload.email, trackingCode) ||
+      undefined,
+  };
+}
+
+function confirmationDepositFromPayload(payload, total) {
+  const depositRaw = Number(payload.deposit);
+  if (Number.isFinite(depositRaw) && depositRaw > 0) {
+    return total > 0 ? Math.min(depositRaw, total) : depositRaw;
+  }
+  return total > 0 ? total : 0;
+}
+
 async function deliverInvoiceEmail(payload) {
   if (isInternalBookingMailContext(payload)) {
     return { skipped: true, reason: 'internal_booking_guest_email_disabled', channel: 'email' };
   }
   const to = (payload.email || '').trim();
-  const { html, text } = mailTemplates.bookingConfirmedInvoiceGuest(payload);
+  const emailPayload = await normalizeConfirmationEmailPayload(payload);
+  const { html, text } = mailTemplates.bookingConfirmedInvoiceGuest(emailPayload);
   const biz = mailTemplates.bizName();
   const subject = `${biz} — Booking confirmed · Invoice ${payload.invoiceNumber}`;
   const result = await sendMail({
@@ -627,13 +683,20 @@ async function deliverInvoiceWhatsApp(payload) {
   }
 
   const text = [
-    `Hi ${payload.guestName}, your invoice ${payload.invoiceNumber} is ready.`,
+    `Hi ${payload.guestName}, your booking is confirmed. Invoice ${payload.invoiceNumber}.`,
     `Total: ${formatMoney(payload.total)}.`,
-    payload.trackingCode ? `Ref: ${payload.trackingCode}.` : '',
+    payload.trackingCode ? `Booking ref: ${payload.trackingCode}.` : '',
+    '',
+    mailTemplates.buildConfirmationDepositSummaryText(payload),
+    '',
+    mailTemplates.buildBankPaymentInstructionsText(payload.trackingCode),
+    '',
+    mailTemplates.cancellationPolicyTextForBooking(payload),
     payload.notes ? String(payload.notes).slice(0, 500) : '',
   ]
-    .filter(Boolean)
-    .join(' ');
+    .filter((line) => line !== undefined)
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
 
   await graphSendMessage({
     to,

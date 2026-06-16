@@ -13,6 +13,7 @@ const financialGlPostingService = require('./financialGlPostingService');
 const guestReceivableAccountService = require('./guestReceivableAccountService');
 const bookingInvoiceService = require('./bookingInvoiceService');
 const { scheduleInvoiceDelivery } = require('./invoiceNotifyService');
+const { guestPayNowPageUrl } = require('./payfastService');
 
 function bookingRecognitionDate(doc) {
   const eventDate = doc?.eventDate ? new Date(doc.eventDate) : null;
@@ -52,11 +53,13 @@ function buildInvoiceEmailFields(invoice, stayTotal, deposit) {
     total: li.total,
   }));
   const tot = Number(o.total);
+  const total = Number.isFinite(tot) && tot > 0 ? tot : stayTotal;
+  const depositDue = total;
   return {
     invoiceNumber: o.invoiceNumber,
-    total: Number.isFinite(tot) ? tot : stayTotal,
-    deposit,
-    balanceDue: Math.max(0, stayTotal - deposit),
+    total,
+    deposit: depositDue,
+    balanceDue: 0,
     notes: o.notes,
     dueDate: o.dueDate,
     lineItems,
@@ -74,7 +77,9 @@ async function onGuestBookingConfirmed(gb, userId) {
   const total = Number(gb.totalAmount) || 0;
   if (total <= 0) return { skipped: true, reason: 'no_amount' };
 
-  const deposit = Math.min(Number(gb.deposit) || 0, total);
+  gb.deposit = total;
+  await gb.save();
+
   const recognitionDate = bookingRecognitionDate(gb);
 
   const arAcc = await guestReceivableAccountService.ensureControlAccountsReceivable(userId);
@@ -87,8 +92,8 @@ async function onGuestBookingConfirmed(gb, userId) {
     contactPhone: gb.guestPhone,
     description: `Guest booking ${gb.trackingCode}`,
     amountOwed: total,
-    amountPaid: deposit,
-    status: debtorStatusFor(total, deposit),
+    amountPaid: 0,
+    status: debtorStatusFor(total, 0),
     guestBookingRef: gb._id,
     receivableAccountId: arAcc._id,
     createdBy: userId,
@@ -140,13 +145,15 @@ async function onGuestBookingConfirmed(gb, userId) {
   await gb.save();
 
   const stayTotal = Number(gb.totalAmount) || 0;
-  const dep = Math.min(Number(gb.deposit) || 0, stayTotal);
   scheduleInvoiceDelivery({
     guestName: gb.guestName,
     email: gb.guestEmail,
     phone: gb.guestPhone,
-    ...buildInvoiceEmailFields(invoice, stayTotal, dep),
+    checkIn: gb.checkIn,
+    checkOut: gb.checkOut,
+    ...buildInvoiceEmailFields(invoice, stayTotal, stayTotal),
     trackingCode: gb.trackingCode,
+    payNowUrl: guestPayNowPageUrl(gb.guestEmail, gb.trackingCode),
     relatedModel: 'GuestBooking',
     relatedId: gb._id,
   });

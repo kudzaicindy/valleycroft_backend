@@ -18,7 +18,6 @@ function formatMoney(n) {
 
 async function guestLinePayload(gb) {
   const total = Number(gb.totalAmount) || 0;
-  const deposit = Math.min(Number(gb.deposit) || 0, total);
   let label = 'Accommodation';
   if (gb.roomId) {
     const room = await Room.findById(gb.roomId).select('name').lean();
@@ -29,15 +28,14 @@ async function guestLinePayload(gb) {
     const co = new Date(gb.checkOut).toISOString().slice(0, 10);
     label += ` (${ci} – ${co})`;
   }
-  const balanceDue = total - deposit;
   return {
     lineItems: [{ description: label, qty: 1, unitPrice: total, total }],
     subtotal: total,
     tax: 0,
     total,
-    deposit,
-    balanceDue,
-    notes: `Booking ref: ${gb.trackingCode}. Deposit received: ${formatMoney(deposit)}. Balance due: ${formatMoney(balanceDue)}.`,
+    deposit: total,
+    balanceDue: 0,
+    notes: `Booking ref: ${gb.trackingCode}. Full amount due upon confirmation: ${formatMoney(total)}.`,
   };
 }
 

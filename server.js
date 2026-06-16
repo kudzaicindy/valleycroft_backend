@@ -22,6 +22,8 @@ const allowedOrigins = process.env.FRONTEND_URL
     'http://localhost:5175',
     'http://localhost:5176',
     'https://valleycroft.vercel.app',
+    'https://www.valleycroftfarm.com',
+    'https://valleycroftfarm.com',
   ];
 app.use(cors({
   origin: (origin, cb) => {
@@ -43,6 +45,7 @@ app.use(express.urlencoded({ extended: true }));
 // Public routes (no auth)
 app.use('/api/rooms', require('./src/routes/roomRoutes'));
 app.use('/api/guest-bookings', require('./src/routes/guestBookingRoutes'));
+app.use('/api/payfast', require('./src/routes/payfastRoutes'));
 
 // Protected routes
 app.use('/api/auth', require('./src/routes/authRoutes'));

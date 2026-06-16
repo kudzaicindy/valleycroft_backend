@@ -3,6 +3,8 @@
  * Tables + inline styles for broad client support.
  */
 
+const { guestPayNowPageUrl } = require('./payfastService');
+
 const DEFAULT_BUSINESS_NAME = 'Valley Croft Accommodation';
 
 function bizName() {
@@ -85,22 +87,47 @@ function trackingHint(trackingCode, guestEmail) {
   return null;
 }
 
-const DEFAULT_CANCELLATION_POLICY =
-  'Your deposit is due as soon as your booking is confirmed. From the time you receive this confirmation email, you have 48 hours to cancel at no charge. If you cancel after those 48 hours, only 50% of what you have paid or owe will be refunded (as applicable).';
+/** Days before check-in that guest must cancel by for a refund (override via env). */
+function cancellationRefundDaysBeforeCheckIn() {
+  const n = Number(process.env.MAIL_CANCELLATION_REFUND_DAYS_BEFORE_CHECKIN);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+}
 
 /** Full policy text for guest emails; override with MAIL_CANCELLATION_POLICY in .env */
 function cancellationPolicyText() {
   const custom = (process.env.MAIL_CANCELLATION_POLICY || '').trim();
-  return custom || DEFAULT_CANCELLATION_POLICY;
+  if (custom) return custom;
+  const days = cancellationRefundDaysBeforeCheckIn();
+  return `Your deposit is the full amount for your stay and is due as soon as your booking is confirmed. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
+}
+
+/** Confirmation email — includes check-in and refund deadline when dates are known. */
+function cancellationPolicyTextForBooking(payload = {}) {
+  const custom = (process.env.MAIL_CANCELLATION_POLICY || '').trim();
+  const days = cancellationRefundDaysBeforeCheckIn();
+  let text =
+    custom ||
+    `Your deposit is the full amount for your stay and is due as soon as your booking is confirmed. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
+
+  const checkIn = payload.checkIn ? new Date(payload.checkIn) : null;
+  if (checkIn && !Number.isNaN(checkIn.getTime())) {
+    const deadline = new Date(checkIn);
+    deadline.setDate(deadline.getDate() - days);
+    text += `\n\nCheck-in: ${formatDate(checkIn)}.`;
+    if (payload.checkOut) {
+      text += ` Check-out: ${formatDate(payload.checkOut)}.`;
+    }
+    text += ` To qualify for a refund, cancel on or before ${formatDate(deadline)}.`;
+  }
+  return text;
 }
 
 /** Pending-request email (before confirmation): no “this confirmation” yet */
-const PENDING_REQUEST_CANCELLATION_POLICY =
-  'When we confirm your booking, your deposit will be due at that time. From the moment you receive our confirmation email, you will have 48 hours to cancel free of charge; after that 48-hour period, only a 50% refund applies.';
-
 function cancellationPolicyPendingGuestText() {
   const custom = (process.env.MAIL_CANCELLATION_POLICY_PENDING || '').trim();
-  return custom || PENDING_REQUEST_CANCELLATION_POLICY;
+  if (custom) return custom;
+  const days = cancellationRefundDaysBeforeCheckIn();
+  return `When we confirm your booking, the full amount for your stay will be due at that time. Refunds are only available if you cancel at least ${days} days before your check-in date.`;
 }
 
 function cancellationPolicyPendingGuestHtml() {
@@ -109,7 +136,7 @@ function cancellationPolicyPendingGuestHtml() {
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 0;">
   <tr>
     <td style="padding:20px 22px;background:${accentSoft()};border-radius:12px;border:1px solid #d4e5dc;">
-      <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:${a};letter-spacing:0.06em;text-transform:uppercase;">Deposit & cancellation</p>
+      <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:${a};letter-spacing:0.06em;text-transform:uppercase;">Payment & cancellation</p>
       <p style="margin:0;font-size:14px;line-height:1.6;color:#2a3a33;">${escapeHtml(t).replace(/\n/g, '<br>')}</p>
     </td>
   </tr>
@@ -118,11 +145,12 @@ function cancellationPolicyPendingGuestHtml() {
 
 /** Short line for admin notification emails */
 function cancellationPolicySummary() {
-  return 'Deposit due upon confirmation; free cancellation within 48h after confirmation email, then 50% refund only.';
+  const days = cancellationRefundDaysBeforeCheckIn();
+  return `Full payment due on confirmation; refund only if cancelled ${days}+ days before check-in.`;
 }
 
-function cancellationPolicyGuestHtml() {
-  const t = cancellationPolicyText();
+function cancellationPolicyGuestHtml(payload = {}) {
+  const t = cancellationPolicyTextForBooking(payload);
   const a = accent();
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 0;">
   <tr>
@@ -134,8 +162,8 @@ function cancellationPolicyGuestHtml() {
 </table>`;
 }
 
-function cancellationPolicyGuestText() {
-  return `Deposit & cancellation:\n${cancellationPolicyText()}`;
+function cancellationPolicyGuestText(payload = {}) {
+  return `Deposit & cancellation:\n${cancellationPolicyTextForBooking(payload)}`;
 }
 
 /** Robust total for invoice emails (Mongoose subdocs, lean objects, plain JSON). */
@@ -159,16 +187,167 @@ function invoiceNumericTotal(payload) {
 }
 
 function invoiceDepositAmount(payload) {
-  const cap = invoiceNumericTotal(payload);
+  return confirmationDepositDue(payload);
+}
+
+/** Amount guest must pay on confirmation — deposit 0 or missing means full stay total. */
+function confirmationDepositDue(payload) {
+  const total = invoiceNumericTotal(payload);
+  if (total <= 0) return 0;
   const d = coerceNumber(payload.deposit);
-  if (!Number.isFinite(d) || d < 0) return 0;
-  return Math.min(d, cap);
+  if (!Number.isFinite(d) || d <= 0) return total;
+  return Math.min(d, total);
+}
+
+function guestFacingInvoiceNotes(notes) {
+  const n = String(notes || '').trim();
+  if (!n) return '';
+  if (/^Booking ref:/i.test(n) && /(deposit|balance due|full amount due)/i.test(n)) return '';
+  return n;
+}
+
+/** Deposit + stay dates summary at top of confirmation email. */
+function buildConfirmationDepositSummaryHtml(payload) {
+  const depositDue = confirmationDepositDue(payload);
+  const rows = [detailMoneyRow('Deposit (full amount due)', depositDue)];
+  if (payload.checkIn) rows.push(detailRow('Check-in', formatDate(payload.checkIn)));
+  if (payload.checkOut) rows.push(detailRow('Check-out', formatDate(payload.checkOut)));
+  const { html } = buildDetailTable(rows);
+  return `<h2 style="margin:24px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Your deposit</h2>
+<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Upon confirmation, your <strong>deposit is the full amount</strong> for your stay (not a partial payment). Please pay by bank transfer using the details below.</p>
+${html}`;
+}
+
+function buildConfirmationDepositSummaryText(payload) {
+  const depositDue = confirmationDepositDue(payload);
+  const lines = [`Deposit (full amount due): ${formatMoney(depositDue)}`];
+  if (payload.checkIn) lines.push(`Check-in: ${formatDate(payload.checkIn)}`);
+  if (payload.checkOut) lines.push(`Check-out: ${formatDate(payload.checkOut)}`);
+  return lines.join('\n');
 }
 
 function invoiceBalanceAmount(payload) {
   const fromPayload = coerceNumber(payload.balanceDue);
   if (Number.isFinite(fromPayload) && fromPayload >= 0) return fromPayload;
   return Math.max(0, invoiceNumericTotal(payload) - invoiceDepositAmount(payload));
+}
+
+/** EFT bank details shown on booking confirmation emails. */
+function bookingBankDetails() {
+  return {
+    accountNumber: (process.env.BOOKING_BANK_ACCOUNT_NUMBER || '63157115148').trim(),
+    accountName: (process.env.BOOKING_BANK_ACCOUNT_NAME || 'Ngimu Agriculture').trim(),
+    bankName: (process.env.BOOKING_BANK_NAME || 'FNB').trim(),
+    branchCode: (process.env.BOOKING_BANK_BRANCH || '250655').trim(),
+  };
+}
+
+/** Where guests send proof of payment (POP). */
+function bookingPopContacts() {
+  const email =
+    process.env.BOOKING_POP_EMAIL?.trim() ||
+    process.env.BOOKING_ADMIN_EMAIL?.trim() ||
+    process.env.GMAIL_USER?.trim() ||
+    '';
+  const raw =
+    process.env.BOOKING_POP_WHATSAPP?.trim() ||
+    process.env.BUSINESS_WHATSAPP?.trim() ||
+    '';
+  const whatsappNumbers = raw
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return { email, whatsappNumbers };
+}
+
+function formatWhatsAppDisplay(num) {
+  const digits = String(num).replace(/\D/g, '');
+  if (!digits) return String(num);
+  if (digits.startsWith('27') && digits.length >= 11) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`.trim();
+  }
+  if (digits.length === 10 && digits.startsWith('0')) {
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  }
+  return num;
+}
+
+function whatsappWaMeLink(num) {
+  let digits = String(num).replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('0')) digits = `27${digits.slice(1)}`;
+  if (!digits.startsWith('27') && digits.length <= 10) digits = `27${digits}`;
+  return `https://wa.me/${digits}`;
+}
+
+function bookingPaymentReference(trackingCode) {
+  const ref = String(trackingCode || '').trim();
+  return ref || 'your booking reference';
+}
+
+/** Plain-text bank + POP block for email / WhatsApp. */
+function buildBankPaymentInstructionsText(trackingCode) {
+  const bank = bookingBankDetails();
+  const pop = bookingPopContacts();
+  const payRef = bookingPaymentReference(trackingCode);
+  const lines = [
+    'How to pay (bank transfer / EFT)',
+    'Pay the full amount for your stay.',
+    `Account name: ${bank.accountName}`,
+    `Bank: ${bank.bankName}`,
+    `Branch code: ${bank.branchCode}`,
+    `Account number: ${bank.accountNumber}`,
+    `Reference: ${payRef}`,
+    '',
+    'Proof of payment (POP)',
+    'After paying, please send your proof of payment so we can confirm receipt.',
+  ];
+  if (pop.email) lines.push(`Email: ${pop.email}`);
+  if (pop.whatsappNumbers.length) {
+    lines.push(`WhatsApp: ${pop.whatsappNumbers.map(formatWhatsAppDisplay).join(' or ')}`);
+  }
+  return lines.join('\n');
+}
+
+function buildBankPaymentInstructionsHtml(trackingCode) {
+  const bank = bookingBankDetails();
+  const pop = bookingPopContacts();
+  const payRef = bookingPaymentReference(trackingCode);
+  const a = accent();
+
+  const bankRows = [
+    detailRow('Account name', bank.accountName),
+    detailRow('Bank', bank.bankName),
+    detailRow('Branch code', bank.branchCode),
+    detailRow('Account number', bank.accountNumber),
+    detailRow('Payment reference', payRef),
+  ];
+  const { html: bankTable } = buildDetailTable(bankRows);
+
+  let popLinesHtml = '';
+  if (pop.email) {
+    popLinesHtml += `<p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:#243830;"><strong>Email:</strong> <a href="mailto:${escapeHtml(pop.email)}" style="color:${a};">${escapeHtml(pop.email)}</a></p>`;
+  }
+  for (const num of pop.whatsappNumbers) {
+    const wa = whatsappWaMeLink(num);
+    const label = formatWhatsAppDisplay(num);
+    popLinesHtml += `<p style="margin:0 0 10px;font-size:15px;line-height:1.55;color:#243830;"><strong>WhatsApp:</strong> ${
+      wa
+        ? `<a href="${escapeHtml(wa)}" style="color:${a};">${escapeHtml(label)}</a>`
+        : escapeHtml(label)
+    }</p>`;
+  }
+  if (!pop.email && !pop.whatsappNumbers.length) {
+    popLinesHtml =
+      '<p style="margin:0;font-size:15px;line-height:1.55;color:#243830;">Reply to this email with your proof of payment attached.</p>';
+  }
+
+  return `<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">How to pay</h2>
+<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Please pay the <strong>full amount</strong> for your stay by <strong>bank transfer / EFT</strong> into the account below. Use your booking reference as the payment reference.</p>
+${bankTable}
+<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Proof of payment</h2>
+<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Once paid, send us your <strong>proof of payment (POP)</strong> — a screenshot or PDF of your bank transfer — so we can confirm receipt:</p>
+${popLinesHtml}`;
 }
 
 /**
@@ -341,7 +520,10 @@ function newBookingRequestAdmin(payload) {
     detailRow('Check-out', formatDate(payload.checkOut)),
     detailRow('Nights', String(payload.nights ?? '—')),
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
-    detailRow('Deposit (est.)', formatMoney(payload.deposit)),
+    detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
+      total: payload.totalAmount,
+      deposit: payload.deposit,
+    }) || payload.totalAmount)),
     detailRow('Reference', payload.trackingCode || '—'),
     detailRow('Source', payload.source || 'website'),
   ];
@@ -370,16 +552,19 @@ function bookingRequestReceivedGuest(payload) {
     detailRow('Check-in', formatDate(payload.checkIn)),
     detailRow('Check-out', formatDate(payload.checkOut)),
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
-    detailRow('Deposit (est.)', formatMoney(payload.deposit)),
+    detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
+      total: payload.totalAmount,
+      deposit: payload.deposit,
+    }) || payload.totalAmount)),
   ];
   const { html: tableHtml, text: tableText } = buildDetailTable(rows);
   const a = accent();
 
   const blocksHtml = `<p style="margin:0 0 16px;font-size:17px;line-height:1.55;color:#243830;">Thank you for choosing <strong style="color:#1a2e26;">${escapeHtml(bizName())}</strong>. We have received your request and will confirm availability as soon as we can.</p>
-<p style="margin:0 0 20px;padding:14px 18px;background:#fff9f0;border-radius:10px;border:1px solid #f0e6d8;font-size:15px;color:#5c5348;line-height:1.5;">Your booking is still <strong style="color:${a};">pending</strong> until you receive a confirmation from us. <strong>When we confirm, your deposit will be due at that time.</strong> Questions? Simply reply to this email.</p>
+<p style="margin:0 0 20px;padding:14px 18px;background:#fff9f0;border-radius:10px;border:1px solid #f0e6d8;font-size:15px;color:#5c5348;line-height:1.5;">Your booking is still <strong style="color:${a};">pending</strong> until you receive a confirmation from us. <strong>When we confirm, the full amount for your stay will be due at that time.</strong> Questions? Simply reply to this email.</p>
 ${tableHtml}
 ${cancellationPolicyPendingGuestHtml()}`;
-  const blocksText = `Thank you for choosing ${bizName()}. We have received your request and will confirm availability shortly.\n\nYour booking is pending until we send a confirmation.\n\n${tableText}\n\nDeposit & cancellation:\n${cancellationPolicyPendingGuestText()}`;
+  const blocksText = `Thank you for choosing ${bizName()}. We have received your request and will confirm availability shortly.\n\nYour booking is pending until we send a confirmation.\n\n${tableText}\n\nPayment & cancellation:\n${cancellationPolicyPendingGuestText()}`;
 
   return wrapLayout({
     headline: "We've received your request",
@@ -426,35 +611,55 @@ function lineItemsText(lineItems) {
 /** Guest: booking confirmed + invoice summary */
 function bookingConfirmedInvoiceGuest(payload) {
   const grandTotal = invoiceNumericTotal(payload);
-  const dep = invoiceDepositAmount(payload);
+  const depositDue = confirmationDepositDue(payload);
   const bal = invoiceBalanceAmount(payload);
+
+  const depositSummaryHtml = buildConfirmationDepositSummaryHtml(payload);
+  const depositSummaryText = buildConfirmationDepositSummaryText(payload);
+  const bankPaymentHtml = buildBankPaymentInstructionsHtml(payload.trackingCode);
+  const bankPaymentText = buildBankPaymentInstructionsText(payload.trackingCode);
+  const cancellationHtml = cancellationPolicyGuestHtml(payload);
+  const cancellationText = cancellationPolicyGuestText(payload);
 
   const ref = payload.trackingCode ? detailRow('Booking ref', payload.trackingCode) : null;
   const rows = [
     ...(ref ? [ref] : []),
     detailRow('Invoice', payload.invoiceNumber),
     detailMoneyRow('Total for stay', grandTotal),
-    detailMoneyRow('Deposit (due upon confirmation)', dep),
-    detailMoneyRow('Balance after deposit', bal),
+    detailMoneyRow('Deposit (full amount due)', depositDue),
   ];
+  if (bal > 0.009) {
+    rows.push(detailMoneyRow('Balance still due', bal));
+  }
   if (payload.dueDate) {
-    rows.push(detailRow('Balance due by', formatDate(payload.dueDate)));
+    rows.push(detailRow('Payment due by', formatDate(payload.dueDate)));
   }
   const { html: metaHtml, text: metaText } = buildDetailTable(rows);
 
   const itemsHtml = lineItemsHtml(payload.lineItems);
   const itemsText = lineItemsText(payload.lineItems) || '  (see total)';
 
-  const notesBlock = payload.notes
-    ? `<p style="margin:20px 0 0;padding:16px 18px;background:#faf8f5;border-radius:12px;font-size:14px;line-height:1.55;color:#3a3a3a;border:1px solid #ebe6df;"><span style="font-size:11px;font-weight:700;color:${accent()};letter-spacing:0.06em;text-transform:uppercase;display:block;margin-bottom:6px;">Note</span>${escapeHtml(payload.notes)}</p>`
+  const guestNotes = guestFacingInvoiceNotes(payload.notes);
+  const notesBlock = guestNotes
+    ? `<p style="margin:20px 0 0;padding:16px 18px;background:#faf8f5;border-radius:12px;font-size:14px;line-height:1.55;color:#3a3a3a;border:1px solid #ebe6df;"><span style="font-size:11px;font-weight:700;color:${accent()};letter-spacing:0.06em;text-transform:uppercase;display:block;margin-bottom:6px;">Note</span>${escapeHtml(guestNotes)}</p>`
     : '';
-  const notesText = payload.notes ? `\nNote: ${payload.notes}` : '';
+  const notesText = guestNotes ? `\nNote: ${guestNotes}` : '';
 
   const site = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
-  const cta =
-    site
+  const payNowUrl =
+    (payload.payNowUrl && String(payload.payNowUrl).trim()) ||
+    guestPayNowPageUrl(payload.email, payload.trackingCode) ||
+    '';
+  const cta = payNowUrl
+    ? { href: payNowUrl, label: 'Pay now' }
+    : site
       ? { href: site, label: 'Visit our website' }
       : undefined;
+
+  const payNowHtml = payNowUrl
+    ? `<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:#5a6a62;">You can also pay online (card) using the <strong>Pay now</strong> button below, or open: <a href="${escapeHtml(payNowUrl)}" style="color:${accent()};word-break:break-all;">${escapeHtml(payNowUrl)}</a></p>`
+    : '';
+  const payNowText = payNowUrl ? `\nPay online (optional): ${payNowUrl}\n` : '';
 
   const a = accent();
   const soft = accentSoft();
@@ -466,32 +671,42 @@ function bookingConfirmedInvoiceGuest(payload) {
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 0;">
         <tr><td style="height:1px;background-color:#c5ddd0;font-size:1px;line-height:1px;">&nbsp;</td></tr>
       </table>
-      <p style="margin:14px 0 0;font-size:15px;line-height:1.45;color:#243830;font-family:system-ui,-apple-system,sans-serif;"><strong style="color:#1a2e26;">Deposit (due upon confirmation):</strong> ${formatMoneyHtml(dep)}</p>
-      <p style="margin:8px 0 0;font-size:15px;line-height:1.45;color:#243830;font-family:system-ui,-apple-system,sans-serif;"><strong style="color:#1a2e26;">Balance after deposit:</strong> ${formatMoneyHtml(bal)}</p>
+      <p style="margin:14px 0 0;font-size:15px;line-height:1.45;color:#243830;font-family:system-ui,-apple-system,sans-serif;"><strong style="color:#1a2e26;">Deposit (full amount due):</strong> ${formatMoneyHtml(depositDue)}</p>
+      ${bal > 0.009 ? `<p style="margin:8px 0 0;font-size:15px;line-height:1.45;color:#243830;font-family:system-ui,-apple-system,sans-serif;"><strong style="color:#1a2e26;">Balance still due:</strong> ${formatMoneyHtml(bal)}</p>` : ''}
     </td>
   </tr>
 </table>`;
 
-  const blocksHtml = `<p style="margin:0 0 18px;font-size:17px;line-height:1.55;color:#243830;">Wonderful news — your stay is <strong style="color:${a};">confirmed</strong>. Your <strong>deposit is due upon confirmation</strong>; please pay the deposit below. The remaining balance is due as agreed or by the date shown.</p>
+  const blocksHtml = `<p style="margin:0 0 18px;font-size:17px;line-height:1.55;color:#243830;">Wonderful news — your stay is <strong style="color:${a};">confirmed</strong>. Please read the <strong>deposit, payment, and cancellation</strong> details below.</p>
+${depositSummaryHtml}
+${bankPaymentHtml}
+${cancellationHtml}
+<h2 style="margin:32px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Booking summary</h2>
 ${metaHtml}
 <h2 style="margin:32px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Invoice details</h2>
 ${itemsHtml}
 ${totalBanner}
-${notesBlock}
-${cancellationPolicyGuestHtml()}`;
+${payNowHtml}
+${notesBlock}`;
 
-  const blocksText = `Wonderful news — your stay is confirmed. Your deposit is due upon confirmation.
+  const blocksText = `Wonderful news — your stay is confirmed.
 
+YOUR DEPOSIT
+${depositSummaryText}
+
+${bankPaymentText}
+
+${cancellationText}
+${payNowText}
+
+BOOKING SUMMARY
 ${metaText}
 
 Invoice lines:
 ${itemsText}
 
 Total for stay: ${formatMoney(grandTotal)}
-Deposit (due upon confirmation): ${formatMoney(dep)}
-Balance after deposit: ${formatMoney(bal)}${notesText}
-
-${cancellationPolicyGuestText()}`;
+Deposit (full amount due): ${formatMoney(depositDue)}${bal > 0.009 ? `\nBalance still due: ${formatMoney(bal)}` : ''}${notesText}`;
 
   return wrapLayout({
     headline: 'Booking confirmed',
@@ -509,7 +724,14 @@ module.exports = {
   newBookingRequestAdmin,
   bookingRequestReceivedGuest,
   bookingConfirmedInvoiceGuest,
+  buildBankPaymentInstructionsText,
+  buildBankPaymentInstructionsHtml,
+  buildConfirmationDepositSummaryText,
+  bookingBankDetails,
+  bookingPopContacts,
   cancellationPolicyText,
+  cancellationPolicyTextForBooking,
+  confirmationDepositDue,
   invoiceGrandTotal: invoiceNumericTotal,
   formatMoney,
   formatDate,
