@@ -3,8 +3,6 @@
  * Tables + inline styles for broad client support.
  */
 
-const { guestPayNowPageUrl } = require('./payfastService');
-
 const DEFAULT_BUSINESS_NAME = 'Valley Croft Accommodation';
 
 function bizName() {
@@ -645,22 +643,6 @@ function bookingConfirmedInvoiceGuest(payload) {
     : '';
   const notesText = guestNotes ? `\nNote: ${guestNotes}` : '';
 
-  const site = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
-  const payNowUrl =
-    (payload.payNowUrl && String(payload.payNowUrl).trim()) ||
-    guestPayNowPageUrl(payload.email, payload.trackingCode) ||
-    '';
-  const cta = payNowUrl
-    ? { href: payNowUrl, label: 'Pay now' }
-    : site
-      ? { href: site, label: 'Visit our website' }
-      : undefined;
-
-  const payNowHtml = payNowUrl
-    ? `<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:#5a6a62;">You can also pay online (card) using the <strong>Pay now</strong> button below, or open: <a href="${escapeHtml(payNowUrl)}" style="color:${accent()};word-break:break-all;">${escapeHtml(payNowUrl)}</a></p>`
-    : '';
-  const payNowText = payNowUrl ? `\nPay online (optional): ${payNowUrl}\n` : '';
-
   const a = accent();
   const soft = accentSoft();
   const totalBanner = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 0;border-collapse:separate;border-radius:12px;border:1px solid #c5ddd0;overflow:hidden;">
@@ -686,7 +668,6 @@ ${metaHtml}
 <h2 style="margin:32px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Invoice details</h2>
 ${itemsHtml}
 ${totalBanner}
-${payNowHtml}
 ${notesBlock}`;
 
   const blocksText = `Wonderful news — your stay is confirmed.
@@ -697,7 +678,6 @@ ${depositSummaryText}
 ${bankPaymentText}
 
 ${cancellationText}
-${payNowText}
 
 BOOKING SUMMARY
 ${metaText}
@@ -714,7 +694,6 @@ Deposit (full amount due): ${formatMoney(depositDue)}${bal > 0.009 ? `\nBalance 
     lead: `Hi ${payload.guestName},`,
     blocksHtml,
     blocksText,
-    cta,
   });
 }
 

@@ -5,7 +5,6 @@
 const nodemailer = require('nodemailer');
 const GuestBooking = require('../models/GuestBooking');
 const mailTemplates = require('./mailTemplates');
-const { guestPayNowPageUrl } = require('./payfastService');
 const { logOutboundEmail } = require('./emailLogService');
 const gmailHttpMail = require('./gmailHttpMail');
 
@@ -473,10 +472,6 @@ async function normalizeConfirmationEmailPayload(payload = {}) {
     checkIn,
     checkOut,
     trackingCode,
-    payNowUrl:
-      (payload.payNowUrl && String(payload.payNowUrl).trim()) ||
-      guestPayNowPageUrl(payload.email, trackingCode) ||
-      undefined,
   };
 }
 
