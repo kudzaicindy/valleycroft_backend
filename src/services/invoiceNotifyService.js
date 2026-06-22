@@ -4,9 +4,15 @@
  */
 const nodemailer = require('nodemailer');
 const GuestBooking = require('../models/GuestBooking');
+const Room = require('../models/Room');
 const mailTemplates = require('./mailTemplates');
 const { logOutboundEmail } = require('./emailLogService');
 const gmailHttpMail = require('./gmailHttpMail');
+const {
+  computeStayQuote,
+  hasAnyFoodAddOn,
+  bookingNights,
+} = require('../utils/foodAddOnPricing');
 
 function smtpConfigured() {
   return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
@@ -429,6 +435,96 @@ async function sendMail({ to, subject, html, text, templateKey, relatedModel, re
   }
 }
 
+/** Plain objects for email templates (Mongoose subdocs can omit fields in setImmediate). */
+function plainLineItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((li) => ({
+    id: li.id,
+    label: li.label,
+    rateLabel: li.rateLabel,
+    description: li.description,
+    qty: li.qty,
+    unitPrice: li.unitPrice,
+    total: li.total,
+  }));
+}
+
+function breakdownHasFoodLines(lineItems) {
+  return Array.isArray(lineItems) && lineItems.some((li) => li?.id === 'breakfast' || li?.id === 'picnic');
+}
+
+/** Load booking from DB and ensure lineItems / foodAddOns are present for email templates. */
+async function enrichGuestBookingEmailPayload(payload = {}) {
+  const bookingId = payload.guestBookingId || payload.relatedId;
+  if (!bookingId || String(payload.relatedModel || 'GuestBooking') !== 'GuestBooking') {
+    return payload;
+  }
+
+  const gb = await GuestBooking.findById(bookingId)
+    .populate('roomId', 'name pricePerNight capacity type')
+    .lean();
+  if (!gb) return payload;
+
+  const room = gb.roomId && typeof gb.roomId === 'object' ? gb.roomId : null;
+  const foodAddOns = payload.foodAddOns || gb.foodAddOns || {};
+  const guestCount = payload.guestCount ?? gb.guestCount ?? 0;
+  const breakdownItems = plainLineItems(gb.pricingBreakdown?.lineItems);
+  const invoiceItems = plainLineItems(payload.lineItems);
+  let lineItems = breakdownHasFoodLines(breakdownItems)
+    ? breakdownItems
+    : breakdownItems.length
+      ? breakdownItems
+      : invoiceItems;
+  let foodTotal = payload.foodTotal ?? gb.pricingBreakdown?.foodTotal ?? 0;
+  let roomTotal = payload.roomTotal ?? gb.pricingBreakdown?.roomTotal;
+
+  const needsFoodLines = hasAnyFoodAddOn(foodAddOns);
+  if (needsFoodLines && !breakdownHasFoodLines(lineItems) && room?.pricePerNight != null) {
+    const quote = computeStayQuote({
+      pricePerNight: room.pricePerNight,
+      checkIn: payload.checkIn || gb.checkIn,
+      checkOut: payload.checkOut || gb.checkOut,
+      guestCount,
+      foodAddOns,
+      roomName: room.name,
+    });
+    lineItems = plainLineItems(quote.lineItems);
+    foodTotal = quote.foodTotal;
+    roomTotal = quote.roomTotal;
+  }
+
+  const nights =
+    payload.nights ??
+    gb.pricingBreakdown?.nights ??
+    (gb.checkIn && gb.checkOut ? bookingNights(gb.checkIn, gb.checkOut) : undefined);
+
+  return {
+    ...payload,
+    guestName: payload.guestName || gb.guestName,
+    guestEmail: payload.guestEmail || gb.guestEmail,
+    guestPhone: payload.guestPhone ?? gb.guestPhone,
+    checkIn: payload.checkIn || gb.checkIn,
+    checkOut: payload.checkOut || gb.checkOut,
+    trackingCode: payload.trackingCode || gb.trackingCode,
+    totalAmount: payload.totalAmount ?? gb.totalAmount,
+    deposit: payload.deposit ?? gb.deposit,
+    guestCount,
+    foodAddOns,
+    nights,
+    roomName: payload.roomName || room?.name,
+    roomType: payload.roomType || room?.type,
+    lineItems,
+    foodTotal,
+    roomTotal,
+    pricingBreakdown: {
+      nights,
+      roomTotal,
+      foodTotal,
+      lineItems,
+    },
+  };
+}
+
 /** Staff/dashboard `Booking` records: never email or WhatsApp the guest — admin alerts only. */
 function isInternalBookingMailContext(payload) {
   return String(payload?.relatedModel || '').trim() === 'Booking';
@@ -436,18 +532,23 @@ function isInternalBookingMailContext(payload) {
 
 /** Ensure confirmation emails always have deposit, dates, and pay link for the template. */
 async function normalizeConfirmationEmailPayload(payload = {}) {
-  let total = Number(payload.total) || mailTemplates.invoiceGrandTotal(payload) || 0;
-  let deposit = confirmationDepositFromPayload(payload, total);
-  let checkIn = payload.checkIn;
-  let checkOut = payload.checkOut;
-  let trackingCode = payload.trackingCode;
+  let enriched = await enrichGuestBookingEmailPayload({
+    ...payload,
+    relatedModel: payload.relatedModel || 'GuestBooking',
+  });
+
+  let total = Number(enriched.total) || mailTemplates.invoiceGrandTotal(enriched) || 0;
+  let deposit = confirmationDepositFromPayload(enriched, total);
+  let checkIn = enriched.checkIn;
+  let checkOut = enriched.checkOut;
+  let trackingCode = enriched.trackingCode;
 
   if (
-    payload.relatedId &&
-    String(payload.relatedModel || '').trim() === 'GuestBooking'
+    enriched.relatedId &&
+    String(enriched.relatedModel || '').trim() === 'GuestBooking'
   ) {
-    const gb = await GuestBooking.findById(payload.relatedId)
-      .select('totalAmount deposit checkIn checkOut trackingCode guestEmail')
+    const gb = await GuestBooking.findById(enriched.relatedId)
+      .select('totalAmount deposit checkIn checkOut trackingCode guestEmail guestCount foodAddOns pricingBreakdown')
       .lean();
     if (gb) {
       const gbTotal = Number(gb.totalAmount) || 0;
@@ -459,19 +560,30 @@ async function normalizeConfirmationEmailPayload(payload = {}) {
       if (Number(gb.deposit) !== total && total > 0) {
         await GuestBooking.findByIdAndUpdate(gb._id, { deposit: total });
       }
+      enriched = await enrichGuestBookingEmailPayload({
+        ...enriched,
+        guestCount: enriched.guestCount ?? gb.guestCount,
+        foodAddOns: enriched.foodAddOns || gb.foodAddOns,
+        totalAmount: total,
+        deposit,
+        checkIn,
+        checkOut,
+        trackingCode,
+      });
     }
   }
 
   if (deposit <= 0 && total > 0) deposit = total;
 
   return {
-    ...payload,
+    ...enriched,
     total,
     deposit,
     balanceDue: 0,
     checkIn,
     checkOut,
     trackingCode,
+    invoiceLineItems: payload.lineItems || enriched.lineItems,
   };
 }
 
@@ -506,8 +618,9 @@ async function deliverInvoiceEmail(payload) {
 }
 
 async function deliverNewBookingAdminEmail(payload) {
+  const enriched = await enrichGuestBookingEmailPayload(payload);
   const recipients = adminBookingNotifyEmails();
-  const { html, text } = mailTemplates.newBookingRequestAdmin(payload);
+  const { html, text } = mailTemplates.newBookingRequestAdmin(enriched);
   const biz = mailTemplates.bizName();
   const subject = `${biz} — New booking request · ${payload.trackingCode || 'ref pending'}`;
   const relatedId = payload.guestBookingId;
@@ -556,8 +669,9 @@ async function deliverNewBookingAdminEmail(payload) {
 }
 
 async function deliverBookingRequestGuestEmail(payload) {
-  const to = (payload.guestEmail || '').trim();
-  const { html, text } = mailTemplates.bookingRequestReceivedGuest(payload);
+  const enriched = await enrichGuestBookingEmailPayload(payload);
+  const to = (enriched.guestEmail || '').trim();
+  const { html, text } = mailTemplates.bookingRequestReceivedGuest(enriched);
   const biz = mailTemplates.bizName();
   const subject = `${biz} — We received your booking request`;
   return sendMail({

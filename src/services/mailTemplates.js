@@ -507,6 +507,52 @@ function newInternalBookingAdmin(payload) {
   });
 }
 
+function foodLineLabel(item) {
+  const text = `${item.label || ''} ${item.description || ''}`.toLowerCase();
+  if (item.id === 'breakfast' || text.includes('breakfast')) return 'Breakfast';
+  if (item.id === 'picnic' || text.includes('picnic')) return 'Picnic setup + hamper';
+  if (item.id === 'room' || text.includes('accommodation')) return 'Room';
+  return item.label || item.description || 'Item';
+}
+
+function lineItemAmount(item) {
+  const lt = coerceNumber(item.total);
+  if (Number.isFinite(lt)) return lt;
+  return (coerceNumber(item.qty) || 1) * (coerceNumber(item.unitPrice) || 0);
+}
+
+function buildPricingBreakdownRows(payload) {
+  const rows = [];
+  const items = payload.lineItems || payload.pricingBreakdown?.lineItems;
+  if (!Array.isArray(items) || items.length === 0) return rows;
+
+  let foodSubtotal = 0;
+  for (const item of items) {
+    const amount = lineItemAmount(item);
+    const label = foodLineLabel(item);
+    if (label === 'Breakfast' || label === 'Picnic setup + hamper') {
+      foodSubtotal += amount;
+    }
+    if (item.id === 'room' || label === 'Room') {
+      rows.push(detailMoneyRow('Room', amount));
+    } else if (label === 'Breakfast') {
+      rows.push(detailMoneyRow('Breakfast', amount));
+    } else if (label === 'Picnic setup + hamper') {
+      rows.push(detailMoneyRow('Picnic setup + hamper', amount));
+    } else if (item.label || item.description) {
+      rows.push(detailMoneyRow(label, amount));
+    }
+  }
+
+  const ft = payload.foodTotal ?? payload.pricingBreakdown?.foodTotal;
+  if (Number.isFinite(ft) && ft > 0) {
+    rows.push(detailMoneyRow('Food add-ons subtotal', ft));
+  } else if (foodSubtotal > 0) {
+    rows.push(detailMoneyRow('Food add-ons subtotal', foodSubtotal));
+  }
+  return rows;
+}
+
 /** Admin: new website booking request */
 function newBookingRequestAdmin(payload) {
   const rows = [
@@ -517,6 +563,17 @@ function newBookingRequestAdmin(payload) {
     detailRow('Check-in', formatDate(payload.checkIn)),
     detailRow('Check-out', formatDate(payload.checkOut)),
     detailRow('Nights', String(payload.nights ?? '—')),
+  ];
+  if (payload.guestCount) rows.push(detailRow('Guests', String(payload.guestCount)));
+  const foodSelected = payload.foodAddOns && (payload.foodAddOns.breakfast || payload.foodAddOns.picnic);
+  if (foodSelected) {
+    const parts = [];
+    if (payload.foodAddOns.breakfast) parts.push('Breakfast');
+    if (payload.foodAddOns.picnic) parts.push('Picnic');
+    rows.push(detailRow('Food add-ons', parts.join(', ')));
+  }
+  rows.push(...buildPricingBreakdownRows(payload));
+  rows.push(
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
     detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
       total: payload.totalAmount,
@@ -524,7 +581,7 @@ function newBookingRequestAdmin(payload) {
     }) || payload.totalAmount)),
     detailRow('Reference', payload.trackingCode || '—'),
     detailRow('Source', payload.source || 'website'),
-  ];
+  );
   if (payload.notes) rows.push(detailRow('Guest notes', payload.notes));
   rows.push(detailRow('Cancellation policy (for guests)', cancellationPolicySummary()));
   const { html: tableHtml, text: tableText } = buildDetailTable(rows);
@@ -549,12 +606,16 @@ function bookingRequestReceivedGuest(payload) {
     detailRow('Room', payload.roomName || '—'),
     detailRow('Check-in', formatDate(payload.checkIn)),
     detailRow('Check-out', formatDate(payload.checkOut)),
+  ];
+  if (payload.guestCount) rows.push(detailRow('Guests', String(payload.guestCount)));
+  rows.push(...buildPricingBreakdownRows(payload));
+  rows.push(
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
     detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
       total: payload.totalAmount,
       deposit: payload.deposit,
     }) || payload.totalAmount)),
-  ];
+  );
   const { html: tableHtml, text: tableText } = buildDetailTable(rows);
   const a = accent();
 
@@ -584,7 +645,7 @@ function lineItemsHtml(lineItems) {
     .map(
       (li) =>
         `<tr>
-          <td style="padding:14px;border-bottom:1px solid #e8f0ec;font-size:15px;color:#243830;">${escapeHtml(li.description || 'Item')}</td>
+          <td style="padding:14px;border-bottom:1px solid #e8f0ec;font-size:15px;color:#243830;">${escapeHtml(li.description || li.label || 'Item')}</td>
           <td style="padding:14px;border-bottom:1px solid #e8f0ec;font-size:15px;text-align:right;white-space:nowrap;font-weight:600;color:#1a2e26;">${formatMoneyHtml(
             li.total != null ? li.total : (coerceNumber(li.qty) || 1) * (coerceNumber(li.unitPrice) || 0),
           )}</td>
@@ -601,7 +662,7 @@ function lineItemsText(lineItems) {
       const amt = Number.isFinite(lt)
         ? lt
         : (coerceNumber(li.qty) || 1) * (coerceNumber(li.unitPrice) || 0);
-      return `  • ${li.description || 'Item'}: ${formatMoney(amt)}`;
+      return `  • ${li.description || li.label || 'Item'}: ${formatMoney(amt)}`;
     })
     .join('\n');
 }
@@ -623,9 +684,20 @@ function bookingConfirmedInvoiceGuest(payload) {
   const rows = [
     ...(ref ? [ref] : []),
     detailRow('Invoice', payload.invoiceNumber),
+  ];
+  if (payload.guestCount) rows.push(detailRow('Guests', String(payload.guestCount)));
+  const foodSelected = payload.foodAddOns && (payload.foodAddOns.breakfast || payload.foodAddOns.picnic);
+  if (foodSelected) {
+    const parts = [];
+    if (payload.foodAddOns.breakfast) parts.push('Breakfast');
+    if (payload.foodAddOns.picnic) parts.push('Picnic');
+    rows.push(detailRow('Food add-ons', parts.join(', ')));
+  }
+  rows.push(...buildPricingBreakdownRows(payload));
+  rows.push(
     detailMoneyRow('Total for stay', grandTotal),
     detailMoneyRow('Deposit (full amount due)', depositDue),
-  ];
+  );
   if (bal > 0.009) {
     rows.push(detailMoneyRow('Balance still due', bal));
   }
@@ -634,8 +706,16 @@ function bookingConfirmedInvoiceGuest(payload) {
   }
   const { html: metaHtml, text: metaText } = buildDetailTable(rows);
 
-  const itemsHtml = lineItemsHtml(payload.lineItems);
-  const itemsText = lineItemsText(payload.lineItems) || '  (see total)';
+  const itemsHtml = lineItemsHtml(
+    (payload.invoiceLineItems && payload.invoiceLineItems.length)
+      ? payload.invoiceLineItems
+      : payload.lineItems,
+  );
+  const itemsText = lineItemsText(
+    (payload.invoiceLineItems && payload.invoiceLineItems.length)
+      ? payload.invoiceLineItems
+      : payload.lineItems,
+  ) || '  (see total)';
 
   const guestNotes = guestFacingInvoiceNotes(payload.notes);
   const notesBlock = guestNotes

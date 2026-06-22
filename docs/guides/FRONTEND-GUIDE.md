@@ -146,25 +146,50 @@ Returns rooms where `isAvailable === true`, sorted by `order`.
 
 ## 4. Guest bookings (public website) — `/api/guest-bookings`
 
-| Method | Endpoint                    | Access     | Description              |
-|--------|-----------------------------|------------|--------------------------|
-| POST   | `/api/guest-bookings`       | Public     | Submit booking request   |
-| GET    | `/api/guest-bookings/track` | Public     | Track by email + code    |
-| GET    | `/api/guest-bookings`       | Admin, CEO | List all guest bookings  |
-| PUT    | `/api/guest-bookings/:id`   | Admin      | Update status/notes      |
+| Method | Endpoint                         | Access     | Description                    |
+|--------|----------------------------------|------------|--------------------------------|
+| GET    | `/api/guest-bookings/food-add-ons` | Public   | Food add-on rates (ZAR)        |
+| GET    | `/api/guest-bookings/quote`      | Public     | Preview room + food total      |
+| POST   | `/api/guest-bookings`            | Public     | Submit booking request         |
+| GET    | `/api/guest-bookings/track`      | Public     | Track by email + code          |
+| GET    | `/api/guest-bookings`            | Admin, CEO | List all guest bookings        |
+| PUT    | `/api/guest-bookings/:id`        | Admin      | Update status/notes            |
+
+### Food add-ons (ZAR)
+
+| Add-on | Rate |
+|--------|------|
+| **Breakfast** | R 100 per person per morning |
+| **Picnic setup + hamper** | R 800 per person (one-time) |
+
+Breakfast is priced per **morning** (= number of nights). Example: 2 guests, 3 nights → R 100 × 2 × 3 = **R 600**.
+
+### GET `/api/guest-bookings/food-add-ons` (Public)
+
+**Response:** `{ success: true, data: [{ id, label, rateLabel, unitPrice, currency }] }`
+
+### GET `/api/guest-bookings/quote` (Public)
+
+**Query:** `roomId`, `checkIn`, `checkOut`, `guestCount?`, `foodAddOns?`
+
+`foodAddOns` accepts `breakfast`, `picnic`, comma-separated (`breakfast,picnic`), repeated query params, or `breakfast=true`.
+
+**Response:** `{ success: true, data: { roomName, nights, guestCount, roomTotal, foodTotal, lineItems, totalAmount, deposit, ... } }`
 
 ### POST `/api/guest-bookings` (Public, no auth)
 
-**Body:** `{ guestName, guestEmail, guestPhone?, roomId, checkIn, checkOut, notes?, source? }`
+**Body:** `{ guestName, guestEmail, guestPhone?, roomId, checkIn, checkOut, guestCount?, foodAddOns?, notes?, source? }`
 
-**Response:** `{ success: true, data: { _id, trackingCode, totalAmount, status, roomName, roomType } }`  
-Show `trackingCode` to the guest for tracking; use **`roomName`** in confirmation UI.
+`foodAddOns`: `{ breakfast?: boolean, picnic?: boolean }` or `["breakfast", "picnic"]`. When any add-on is selected, **`guestCount`** (min 1, max room capacity) is required unless **`foodAmount`** is sent (guests inferred). Optional **`roomAmount`** + **`foodAmount`**: when both are sent, the API stores **`totalAmount = roomAmount + foodAmount`** (e.g. 1500 + 200 = **1700**).
+
+**Response:** `{ success: true, data: { _id, trackingCode, roomAmount, foodAmount, totalAmount, guestCount, foodAddOns, pricingBreakdown, deposit, status, roomName, roomType, ... } }`  
+Show `trackingCode` to the guest for tracking; use **`roomName`** in confirmation UI. **`pricingBreakdown.lineItems`** has room + food lines for the review step.
 
 ### GET `/api/guest-bookings/track` (Public)
 
 **Query:** `?email=...&trackingCode=...`
 
-**Response:** `{ success: true, data: { guestName, guestEmail, checkIn, checkOut, totalAmount, deposit, status, trackingCode, roomId: { name, type }, roomName, roomType } }`  
+**Response:** `{ success: true, data: { guestName, guestEmail, checkIn, checkOut, guestCount, foodAddOns, pricingBreakdown, totalAmount, deposit, status, trackingCode, roomId: { name, type }, roomName, roomType } }`  
 (`roomName` / `roomType` mirror the linked room for easy preview text.)
 
 ### GET `/api/guest-bookings` (Admin, CEO)
@@ -177,7 +202,40 @@ Show `trackingCode` to the guest for tracking; use **`roomName`** in confirmatio
 
 **Body:** `{ status?: 'pending'|'confirmed'|'cancelled', notes? }`
 
-**Response:** `{ success: true, data: <booking> }` — when **`status`** becomes **`confirmed`**, **`debtorId`** and **`revenueTransactionId`** are set (revenue hits **`/api/finance`** statements and **`/api/accounting`**). If ledger seed is missing, confirm fails with **400** and the status is rolled back. **`confirmed` → `cancelled`** reverses debtor/transaction/journal.
+**Response:** `{ success: true, data: <booking> }` — when **`status`** becomes **`confirmed`**, **`debtorId`**, **`roomRevenueTransactionId`**, **`foodRevenueTransactionId`** (when food add-ons), and **`revenueTransactionId`** (room txn alias) are set. Revenue is split: room **`booking`** txn (`BOOK-{trackingCode}`) + food **`catering`** txn (`BOOK-FOOD-{trackingCode}`). One GL journal (DR 1010 total, CR 4001 room + CR 4003 food). If ledger seed is missing, confirm fails with **400** and the status is rolled back.
+
+### POST `/api/guest-bookings/:id/post-revenue` (Admin)
+
+Repair or post split revenue when a booking is already **confirmed** but food (or room) transactions are missing.
+
+**Response:** `{ success: true, data: <booking>, revenue: { roomRevenueTransactionId, foodRevenueTransactionId, roomTotal, foodTotal, total } }`
+
+---
+
+## 4b. Event enquiries — `/api/enquiries`
+
+| Method | Endpoint                      | Access     | Description              |
+|--------|-------------------------------|------------|--------------------------|
+| GET    | `/api/enquiries/food-add-ons` | Public     | Same food rates catalogue |
+| GET    | `/api/enquiries/food-quote`   | Public     | Estimate food total      |
+| POST   | `/api/enquiries`              | Public     | Submit event enquiry     |
+| GET    | `/api/enquiries`              | Admin+     | List enquiries           |
+
+### GET `/api/enquiries/food-quote` (Public)
+
+**Query:** `guestCount`, `foodAddOns` (e.g. `picnic` or `breakfast,picnic`)
+
+**Response:** `{ success: true, data: { guestCount, foodAddOns, lineItems, foodTotal, currency: 'ZAR' } }`
+
+Picnic for 10 guests: **R 8,000** (R 800 × 10).
+
+### POST `/api/enquiries` (Public)
+
+**Body:** `{ guestName, guestEmail, guestPhone?, eventTitle?, eventType?, eventDate?, venue?, guestCount?, foodAddOns?, subject?, message }`
+
+When `foodAddOns` includes picnic/breakfast, **`guestCount`** is required. Selected add-ons and estimated food total are stored on the enquiry and appended to **`message`** for admin review.
+
+**Response:** `{ success: true, data: { ...enquiry, foodLineItems? } }`
 
 ---
 

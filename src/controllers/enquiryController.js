@@ -8,6 +8,12 @@ const {
   getMailFrom,
 } = require('./quotationController');
 const invoiceNotify = require('../services/invoiceNotifyService');
+const {
+  parseFoodAddOns,
+  hasAnyFoodAddOn,
+  computeEventFoodQuote,
+  catalogueForApi,
+} = require('../utils/foodAddOnPricing');
 
 const PUBLIC_CREATE_FIELDS = [
   'guestName',
@@ -18,6 +24,7 @@ const PUBLIC_CREATE_FIELDS = [
   'eventDate',
   'venue',
   'guestCount',
+  'foodAddOns',
   'subject',
   'message',
 ];
@@ -49,6 +56,34 @@ function pickPublicEnquiryPayload(body = {}) {
       .join('\n');
   }
   return out;
+}
+
+function foodAddOnsFromBody(body) {
+  if (body.foodAddOns !== undefined) {
+    const raw = body.foodAddOns;
+    if (typeof raw === 'string' && raw.includes(',')) {
+      return parseFoodAddOns(raw.split(',').map((s) => s.trim()));
+    }
+    return parseFoodAddOns(raw);
+  }
+  return parseFoodAddOns({
+    breakfast: body.breakfast,
+    picnic: body.picnic,
+  });
+}
+
+function appendFoodAddOnsToMessage(message, foodQuote) {
+  if (!foodQuote || !hasAnyFoodAddOn(foodQuote.foodAddOns)) return message;
+  const lines = (foodQuote.lineItems || []).map(
+    (li) => `  • ${li.label}: ${li.rateLabel} — R ${li.total.toFixed(2)}`,
+  );
+  const block = [
+    'Food add-ons requested:',
+    ...lines,
+    `Estimated food total: R ${foodQuote.foodTotal.toFixed(2)}`,
+  ].join('\n');
+  const base = String(message || '').trim();
+  return base ? `${base}\n\n${block}` : block;
 }
 
 function createQuotationPayloadFromEnquiry(enquiry, payload = {}) {
@@ -85,6 +120,32 @@ function createQuotationPayloadFromEnquiry(enquiry, payload = {}) {
   };
 }
 
+const getFoodAddOnCatalogue = asyncHandler(async (_req, res) => {
+  res.json({ success: true, data: catalogueForApi() });
+});
+
+const quoteEventFood = asyncHandler(async (req, res) => {
+  const guestCount = Number(req.query.guestCount ?? req.query.guests ?? 0);
+  if (!Number.isFinite(guestCount) || guestCount < 0) {
+    return res.status(400).json({ success: false, message: 'guestCount must be a valid non-negative number' });
+  }
+  const foodAddOns = foodAddOnsFromBody(req.query);
+  if (!hasAnyFoodAddOn(foodAddOns)) {
+    return res.json({
+      success: true,
+      data: { guestCount, foodAddOns, lineItems: [], foodTotal: 0, currency: 'ZAR' },
+    });
+  }
+  if (guestCount < 1) {
+    return res.status(400).json({
+      success: false,
+      message: 'guestCount is required (minimum 1) to estimate food add-ons',
+    });
+  }
+  const quote = computeEventFoodQuote({ guestCount, foodAddOns });
+  res.json({ success: true, data: { ...quote, currency: 'ZAR' } });
+});
+
 const createPublicEnquiry = asyncHandler(async (req, res) => {
   const payload = pickPublicEnquiryPayload(req.body);
   if (!payload.guestName || !payload.guestEmail || !payload.message) {
@@ -93,8 +154,32 @@ const createPublicEnquiry = asyncHandler(async (req, res) => {
       message: 'guestName, guestEmail and message are required',
     });
   }
+  const foodAddOns = foodAddOnsFromBody(req.body);
+  const guestCount = Number(payload.guestCount) || 0;
+  if (hasAnyFoodAddOn(foodAddOns) && guestCount < 1) {
+    return res.status(400).json({
+      success: false,
+      message: 'guestCount is required (minimum 1) when food add-ons are selected',
+    });
+  }
+  let foodTotal = 0;
+  let foodLineItems = [];
+  if (hasAnyFoodAddOn(foodAddOns) && guestCount > 0) {
+    const foodQuote = computeEventFoodQuote({ guestCount, foodAddOns });
+    foodTotal = foodQuote.foodTotal;
+    foodLineItems = foodQuote.lineItems;
+    payload.message = appendFoodAddOnsToMessage(payload.message, foodQuote);
+  }
+  payload.foodAddOns = foodAddOns;
+  payload.foodTotal = foodTotal;
   const enquiry = await Enquiry.create(payload);
-  return res.status(201).json({ success: true, data: enquiry });
+  return res.status(201).json({
+    success: true,
+    data: {
+      ...enquiry.toObject(),
+      foodLineItems,
+    },
+  });
 });
 
 const listEnquiries = asyncHandler(async (req, res) => {
@@ -218,6 +303,8 @@ const closeEnquiry = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  getFoodAddOnCatalogue,
+  quoteEventFood,
   createPublicEnquiry,
   listEnquiries,
   getEnquiryById,

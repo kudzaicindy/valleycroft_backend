@@ -21,6 +21,7 @@ function cleanAccountCode(value) {
 function mapIncomeAccount(category) {
   const c = (category || '').toLowerCase();
   if (c === 'booking') return '4001';
+  if (c === 'catering') return '4003';
   if (c === 'event') return '4002';
   if (c === 'interest' || c === 'other_income') return '4003';
   return '4003';

@@ -3,6 +3,8 @@
  * Uses control account 1010 for guest A/R per COA — not per-booking sub-accounts.
  */
 const { CHART_OF_ACCOUNTS_V3 } = require('../constants/chartOfAccountsV3');
+const { REVENUE_ACCOUNTS } = require('../constants/foodAddOns');
+const { getGuestBookingRevenueSplit } = require('../utils/foodAddOnPricing');
 const { createFinancialJournalEntry } = require('../utils/financialJournal');
 const FinancialJournalEntry = require('../models/FinancialJournalEntry');
 const { round2 } = require('../utils/math');
@@ -17,30 +19,51 @@ function coaMeta(code) {
   return { name, accountType };
 }
 
-function glLine(accountCode, side, amount) {
+function glLine(accountCode, side, amount, description) {
   const { name, accountType } = coaMeta(accountCode);
-  return {
+  const line = {
     accountCode: String(accountCode),
     accountName: name,
     accountType,
     side,
     amount: round2(amount),
   };
+  if (description) line.description = description;
+  return line;
 }
 
 /**
- * JE-01 — Guest BnB booking confirmed (DR 1010 / CR 4001).
+ * JE-01 — Guest BnB booking confirmed.
+ * DR 1010 for full booking total; CR 4001 (room) and CR 4003 (food add-ons) when food is included.
  * @param {{ journalDate?: Date|string }} [options] - optional GL date (defaults to now); use for backfills aligned to `Transaction.date`.
  */
 async function postGuestBookingRevenueV3(guestBookingDoc, userId, options = {}) {
-  const total = round2(Number(guestBookingDoc.totalAmount) || 0);
-  if (total <= 0) throw new Error('Booking total must be positive for revenue recognition');
+  const split = getGuestBookingRevenueSplit(guestBookingDoc);
+  if (split.total <= 0) throw new Error('Booking total must be positive for revenue recognition');
 
-  const desc = `BnB Revenue — ${guestBookingDoc.guestName} (${guestBookingDoc.trackingCode || guestBookingDoc._id})`;
+  const hasFood = split.foodTotal > 0;
+  const desc = hasFood
+    ? `BnB + food revenue — ${guestBookingDoc.guestName} (${guestBookingDoc.trackingCode || guestBookingDoc._id})`
+    : `BnB Revenue — ${guestBookingDoc.guestName} (${guestBookingDoc.trackingCode || guestBookingDoc._id})`;
   const journalDate =
     options.journalDate != null && options.journalDate !== ''
       ? new Date(options.journalDate)
       : new Date();
+
+  const creditLines = [];
+  if (split.roomTotal > 0) {
+    creditLines.push(
+      glLine(REVENUE_ACCOUNTS.room, 'CR', split.roomTotal, 'Room / accommodation'),
+    );
+  }
+  if (split.foodTotal > 0) {
+    creditLines.push(
+      glLine(REVENUE_ACCOUNTS.food, 'CR', split.foodTotal, 'Food add-ons'),
+    );
+  }
+  if (!creditLines.length) {
+    creditLines.push(glLine(REVENUE_ACCOUNTS.room, 'CR', split.total));
+  }
 
   return createFinancialJournalEntry(
     {
@@ -51,7 +74,7 @@ async function postGuestBookingRevenueV3(guestBookingDoc, userId, options = {}) 
       bookingRef: guestBookingDoc._id,
       createdBy: userId,
     },
-    [glLine(1010, 'DR', total), glLine(4001, 'CR', total)]
+    [glLine(1010, 'DR', split.total, 'Guest booking receivable'), ...creditLines],
   );
 }
 

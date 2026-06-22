@@ -6,6 +6,16 @@ const { withRoomPreview, withRoomPreviewMany } = require('../utils/bookingPrevie
 const { isRoomAvailableForDates } = require('../utils/availability');
 const bookingRevenueService = require('../services/bookingRevenueService');
 const { scheduleNewGuestBookingEmails } = require('../services/invoiceNotifyService');
+const {
+  parseFoodAddOns,
+  hasAnyFoodAddOn,
+  computeStayQuote,
+  catalogueForApi,
+  bookingNights,
+  resolveBookingAmounts,
+  pricingBreakdownFromAmounts,
+} = require('../utils/foodAddOnPricing');
+const { FOOD_ADD_ONS } = require('../constants/foodAddOns');
 const crypto = require('crypto');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -37,6 +47,186 @@ const resolveRoomId = async (roomId) => {
   }).lean();
   return room ? room._id : null;
 };
+
+function parseGuestCount(body) {
+  const raw = body.guestCount ?? body.adults ?? body.guests ?? body.numberOfGuests;
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : NaN;
+}
+
+/** When the website sends foodAmount but not guestCount, infer guests from breakfast/picnic totals. */
+function inferGuestCountFromFoodAmount(foodAddOns, nights, foodAmount) {
+  const amount = Number(foodAmount);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  const morningCount = Math.max(1, Number(nights) || 1);
+  const breakfast = foodAddOns.breakfast;
+  const picnic = foodAddOns.picnic;
+  if (breakfast && !picnic) {
+    const perGuest = FOOD_ADD_ONS.breakfast.unitPrice * morningCount;
+    if (perGuest > 0) return Math.max(1, Math.round(amount / perGuest));
+  }
+  if (picnic && !breakfast) {
+    return Math.max(1, Math.round(amount / FOOD_ADD_ONS.picnic.unitPrice));
+  }
+  return 0;
+}
+
+function resolveGuestCount(body, foodAddOns, nights) {
+  const parsed = parseGuestCount(body);
+  if (parsed >= 1) return parsed;
+  if (!hasAnyFoodAddOn(foodAddOns)) return parsed;
+  const inferred = inferGuestCountFromFoodAmount(foodAddOns, nights, body.foodAmount);
+  return inferred >= 1 ? inferred : parsed;
+}
+
+function resolveDeposit(bodyDeposit, totalAmount) {
+  const total = Number(totalAmount) || 0;
+  if (total <= 0) return 0;
+  if (bodyDeposit == null || bodyDeposit === '') return total;
+  const d = Number(bodyDeposit);
+  if (!Number.isFinite(d) || d <= 0) return total;
+  return Math.min(d, total);
+}
+
+function foodAddOnsFromBody(body) {
+  const raw =
+    body.foodAddOns ??
+    body.foodAddons ??
+    body.addons ??
+    body.addOns;
+  if (raw !== undefined) {
+    if (typeof raw === 'string' && raw.includes(',')) {
+      return parseFoodAddOns(raw.split(',').map((s) => s.trim()));
+    }
+    const parsed = parseFoodAddOns(raw);
+    if (hasAnyFoodAddOn(parsed)) return parsed;
+  }
+
+  const notes = String(body.notes || '');
+  const fromNotes = { breakfast: /breakfast/i.test(notes), picnic: /picnic/i.test(notes) };
+  if (fromNotes.breakfast || fromNotes.picnic) {
+    return parseFoodAddOns(fromNotes);
+  }
+
+  const foodAmount = Number(body.foodAmount);
+  if (Number.isFinite(foodAmount) && foodAmount > 0) {
+    return parseFoodAddOns(['breakfast']);
+  }
+
+  return parseFoodAddOns({
+    breakfast: body.breakfast,
+    picnic: body.picnic,
+  });
+}
+
+function validateFoodAddOnGuestCount(guestCount, foodAddOns, roomCapacity) {
+  if (!hasAnyFoodAddOn(foodAddOns)) return null;
+  if (!Number.isFinite(guestCount) || guestCount < 1) {
+    return 'guestCount is required (minimum 1) when food add-ons are selected';
+  }
+  const cap = Number(roomCapacity);
+  if (Number.isFinite(cap) && cap > 0 && guestCount > cap) {
+    return `guestCount cannot exceed room capacity (${cap})`;
+  }
+  return null;
+}
+
+function bookingPayloadFromRecord(booking, room, quoteExtras = {}) {
+  const roomName = room?.name || quoteExtras.roomName;
+  return {
+    _id: booking._id,
+    trackingCode: booking.trackingCode,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    guestCount: booking.guestCount,
+    foodAddOns: booking.foodAddOns,
+    roomAmount: booking.roomAmount,
+    foodAmount: booking.foodAmount,
+    roomTotal: booking.roomAmount,
+    foodTotal: booking.foodAmount,
+    totalAmount: booking.totalAmount,
+    deposit: booking.deposit,
+    pricingBreakdown: booking.pricingBreakdown,
+    lineItems: booking.pricingBreakdown?.lineItems,
+    nights: booking.pricingBreakdown?.nights,
+    status: booking.status,
+    roomName,
+    roomType: room?.type,
+    currency: 'ZAR',
+    debtorId: booking.debtorId,
+    roomRevenueTransactionId: booking.roomRevenueTransactionId,
+    foodRevenueTransactionId: booking.foodRevenueTransactionId,
+    revenueTransactionId: booking.revenueTransactionId,
+  };
+}
+const getFoodAddOnCatalogue = asyncHandler(async (_req, res) => {
+  res.json({ success: true, data: catalogueForApi() });
+});
+
+// Public: quote room + food add-ons before submitting
+const quoteGuestBooking = asyncHandler(async (req, res) => {
+  const { roomId, checkIn, checkOut } = req.query;
+  if (!roomId || !checkIn || !checkOut) {
+    return res.status(400).json({
+      success: false,
+      message: 'roomId, checkIn and checkOut are required',
+    });
+  }
+  if (!isValidDateInput(checkIn) || !isValidDateInput(checkOut)) {
+    return res.status(400).json({ success: false, message: 'checkIn and checkOut must be valid dates' });
+  }
+  if (new Date(checkOut) <= new Date(checkIn)) {
+    return res.status(400).json({ success: false, message: 'checkOut must be after checkIn' });
+  }
+  const resolvedRoomId = await resolveRoomId(roomId);
+  const room = resolvedRoomId ? await Room.findById(resolvedRoomId).lean() : null;
+  if (!room || !room.isAvailable) {
+    return res.status(400).json({ success: false, message: 'Room not available' });
+  }
+  const foodAddOns = foodAddOnsFromBody(req.query);
+  const guestCount = resolveGuestCount(req.query, foodAddOns, bookingNights(checkIn, checkOut));
+  if (Number.isNaN(guestCount)) {
+    return res.status(400).json({ success: false, message: 'guestCount must be a valid non-negative number' });
+  }
+  const guestErr = validateFoodAddOnGuestCount(guestCount, foodAddOns, room.capacity);
+  if (guestErr) {
+    return res.status(400).json({ success: false, message: guestErr });
+  }
+  const pricePerNight = Number(room.pricePerNight);
+  if (!Number.isFinite(pricePerNight) || pricePerNight < 0) {
+    return res.status(400).json({ success: false, message: 'Room pricing is invalid; contact admin' });
+  }
+  const quote = computeStayQuote({
+    pricePerNight,
+    checkIn,
+    checkOut,
+    guestCount,
+    foodAddOns,
+    roomName: room.name,
+  });
+  const amounts = resolveBookingAmounts(req.query, quote);
+  const breakdown = pricingBreakdownFromAmounts(quote, amounts, room.name);
+  res.json({
+    success: true,
+    data: {
+      roomId: room._id,
+      roomName: room.name,
+      roomType: room.type,
+      capacity: room.capacity,
+      currency: 'ZAR',
+      ...quote,
+      roomAmount: amounts.roomAmount,
+      foodAmount: amounts.foodAmount,
+      roomTotal: amounts.roomAmount,
+      foodTotal: amounts.foodAmount,
+      totalAmount: amounts.totalAmount,
+      pricingBreakdown: breakdown,
+      lineItems: breakdown.lineItems,
+      deposit: amounts.totalAmount,
+    },
+  });
+});
 
 // Public: submit guest booking request
 const createGuestBooking = asyncHandler(async (req, res) => {
@@ -71,15 +261,37 @@ const createGuestBooking = asyncHandler(async (req, res) => {
   if (!Number.isFinite(pricePerNight) || pricePerNight < 0) {
     return res.status(400).json({ success: false, message: 'Room pricing is invalid; contact admin' });
   }
-  const totalAmount = pricePerNight * nights;
+  const foodAddOns = foodAddOnsFromBody(req.body);
+  const guestCount = resolveGuestCount(req.body, foodAddOns, nights);
+  if (Number.isNaN(guestCount)) {
+    return res.status(400).json({ success: false, message: 'guestCount must be a valid non-negative number' });
+  }
+  const guestErr = validateFoodAddOnGuestCount(guestCount, foodAddOns, room.capacity);
+  if (guestErr) {
+    return res.status(400).json({ success: false, message: guestErr });
+  }
+  const quote = computeStayQuote({
+    pricePerNight,
+    checkIn,
+    checkOut,
+    guestCount,
+    foodAddOns,
+    roomName: room.name,
+  });
+  const amounts = resolveBookingAmounts(req.body, quote);
+  const totalAmount = amounts.totalAmount;
   if (!Number.isFinite(totalAmount) || totalAmount < 0) {
     return res.status(400).json({ success: false, message: 'Calculated totalAmount is invalid' });
   }
-  const depositRaw = req.body.deposit != null ? Number(req.body.deposit) : totalAmount;
-  if (!Number.isFinite(depositRaw) || depositRaw < 0) {
-    return res.status(400).json({ success: false, message: 'deposit must be a valid non-negative number' });
+  const clientFood = Number(req.body.foodAmount);
+  if (Number.isFinite(clientFood) && clientFood > 0 && amounts.foodAmount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Food add-ons could not be applied. Send foodAddons (e.g. ["breakfast"]) and foodAmount or guestCount.',
+    });
   }
-  const deposit = Math.min(depositRaw, totalAmount);
+  const pricingBreakdown = pricingBreakdownFromAmounts(quote, amounts, room.name);
+  const deposit = resolveDeposit(req.body.deposit, totalAmount);
 
   const booking = await GuestBooking.create({
     guestName,
@@ -88,6 +300,11 @@ const createGuestBooking = asyncHandler(async (req, res) => {
     roomId: resolvedRoomId,
     checkIn,
     checkOut,
+    guestCount,
+    foodAddOns,
+    pricingBreakdown,
+    roomAmount: amounts.roomAmount,
+    foodAmount: amounts.foodAmount,
     totalAmount,
     deposit,
     trackingCode: generateTrackingCode(),
@@ -103,6 +320,14 @@ const createGuestBooking = asyncHandler(async (req, res) => {
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
     nights,
+    guestCount,
+    foodAddOns,
+    pricingBreakdown: booking.pricingBreakdown,
+    lineItems: pricingBreakdown.lineItems,
+    roomAmount: amounts.roomAmount,
+    foodAmount: amounts.foodAmount,
+    roomTotal: amounts.roomAmount,
+    foodTotal: amounts.foodAmount,
     totalAmount: booking.totalAmount,
     deposit: booking.deposit,
     trackingCode: booking.trackingCode,
@@ -112,14 +337,7 @@ const createGuestBooking = asyncHandler(async (req, res) => {
   });
   res.status(201).json({
     success: true,
-    data: {
-      _id: booking._id,
-      trackingCode: booking.trackingCode,
-      totalAmount: booking.totalAmount,
-      status: booking.status,
-      roomName: room.name,
-      roomType: room.type,
-    },
+    data: bookingPayloadFromRecord(booking, room),
   });
 });
 
@@ -135,7 +353,7 @@ const trackBooking = asyncHandler(async (req, res) => {
   })
     .populate('roomId', 'name type')
     .lean()
-    .select('guestName guestEmail checkIn checkOut totalAmount deposit status trackingCode roomId');
+    .select('guestName guestEmail checkIn checkOut guestCount foodAddOns roomAmount foodAmount pricingBreakdown totalAmount deposit status trackingCode roomId roomRevenueTransactionId foodRevenueTransactionId revenueTransactionId debtorId');
   if (!booking) {
     return res.status(404).json({ success: false, message: 'Booking not found' });
   }
@@ -234,6 +452,33 @@ const updateGuestBooking = asyncHandler(async (req, res) => {
   res.json({ success: true, data: withRoomPreview(updated) });
 });
 
+/** Admin: post or repair split room + food revenue transactions */
+const postGuestBookingRevenue = asyncHandler(async (req, res) => {
+  const booking = await GuestBooking.findById(req.params.id);
+  if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+  if (booking.status !== 'confirmed') {
+    return res.status(400).json({
+      success: false,
+      message: 'Booking must be confirmed before posting revenue',
+    });
+  }
+  try {
+    const result = await bookingRevenueService.postGuestBookingRevenue(booking, req.user._id);
+    const updated = await GuestBooking.findById(booking._id).populate('roomId', 'name type').lean();
+    return res.json({
+      success: true,
+      data: withRoomPreview(updated),
+      revenue: result,
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || 'Could not post room & food revenue',
+      hint: 'Ensure chart of accounts is seeded: npm run seed:accounting',
+    });
+  }
+});
+
 const deleteGuestBooking = asyncHandler(async (req, res) => {
   const booking = await GuestBooking.findById(req.params.id);
   if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
@@ -241,7 +486,7 @@ const deleteGuestBooking = asyncHandler(async (req, res) => {
   const before = booking.toObject();
 
   // Keep ledger/debtor/invoice consistent when deleting a previously confirmed booking.
-  if (booking.status === 'confirmed' && booking.revenueTransactionId) {
+  if (booking.status === 'confirmed' && (booking.revenueTransactionId || booking.roomRevenueTransactionId)) {
     await bookingRevenueService.reverseGuestBookingRevenue(booking, req.user._id);
   }
 
@@ -261,9 +506,12 @@ const deleteGuestBooking = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  getFoodAddOnCatalogue,
+  quoteGuestBooking,
   createGuestBooking,
   trackBooking,
   getAllGuestBookings,
   updateGuestBooking,
+  postGuestBookingRevenue,
   deleteGuestBooking,
 };

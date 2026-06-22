@@ -10,6 +10,12 @@ const enquirySchema = new mongoose.Schema(
     eventDate: { type: Date },
     venue: { type: String, trim: true },
     guestCount: { type: Number, min: 0, default: 0 },
+    foodAddOns: {
+      breakfast: { type: Boolean, default: false },
+      picnic: { type: Boolean, default: false },
+    },
+    /** Estimated food add-on total at enquiry time (ZAR) */
+    foodTotal: { type: Number, min: 0, default: 0 },
     subject: { type: String, trim: true },
     message: { type: String, trim: true, required: true },
     status: {

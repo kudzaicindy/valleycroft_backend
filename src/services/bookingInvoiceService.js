@@ -4,6 +4,7 @@
 const Invoice = require('../models/Invoice');
 const Debtor = require('../models/Debtor');
 const Room = require('../models/Room');
+const { FOOD_ADD_ONS } = require('../constants/foodAddOns');
 
 function addDays(d, n) {
   const x = new Date(d);
@@ -16,23 +17,67 @@ function formatMoney(n) {
   return `R ${v.toFixed(2)}`;
 }
 
+function foodLineDescription(item) {
+  const def = FOOD_ADD_ONS[item.id];
+  const label = item.label || def?.label || 'Food add-on';
+  if (item.rateLabel) return `${label} (${item.rateLabel})`;
+  if (def?.rateLabel) return `${label} (${def.rateLabel})`;
+  return label;
+}
+
+function invoiceLineFromBreakdownItem(item) {
+  return {
+    description: foodLineDescription(item),
+    qty: item.qty || 1,
+    unitPrice: item.unitPrice,
+    total: item.total,
+  };
+}
+
 async function guestLinePayload(gb) {
   const total = Number(gb.totalAmount) || 0;
-  let label = 'Accommodation';
-  if (gb.roomId) {
-    const room = await Room.findById(gb.roomId).select('name').lean();
-    if (room?.name) label = room.name;
+  const breakdown = gb.pricingBreakdown;
+  const lineItems = [];
+
+  if (breakdown?.lineItems?.length) {
+    for (const item of breakdown.lineItems) {
+      if (item.id === 'room') {
+        let label = item.label || 'Accommodation';
+        if (gb.checkIn && gb.checkOut) {
+          const ci = new Date(gb.checkIn).toISOString().slice(0, 10);
+          const co = new Date(gb.checkOut).toISOString().slice(0, 10);
+          label += ` (${ci} – ${co})`;
+        }
+        lineItems.push({
+          description: label,
+          qty: item.qty || 1,
+          unitPrice: item.unitPrice,
+          total: item.total,
+        });
+      } else {
+        lineItems.push(invoiceLineFromBreakdownItem(item));
+      }
+    }
+  } else {
+    let label = 'Accommodation';
+    if (gb.roomId) {
+      const room = await Room.findById(gb.roomId).select('name').lean();
+      if (room?.name) label = room.name;
+    }
+    if (gb.checkIn && gb.checkOut) {
+      const ci = new Date(gb.checkIn).toISOString().slice(0, 10);
+      const co = new Date(gb.checkOut).toISOString().slice(0, 10);
+      label += ` (${ci} – ${co})`;
+    }
+    lineItems.push({ description: label, qty: 1, unitPrice: total, total });
   }
-  if (gb.checkIn && gb.checkOut) {
-    const ci = new Date(gb.checkIn).toISOString().slice(0, 10);
-    const co = new Date(gb.checkOut).toISOString().slice(0, 10);
-    label += ` (${ci} – ${co})`;
-  }
+
+  const subtotal = lineItems.reduce((sum, li) => sum + (Number(li.total) || 0), 0);
   return {
-    lineItems: [{ description: label, qty: 1, unitPrice: total, total }],
-    subtotal: total,
+    lineItems,
+    subtotal,
     tax: 0,
-    total,
+    total: subtotal || total,
     deposit: total,
     balanceDue: 0,
     notes: `Booking ref: ${gb.trackingCode}. Full amount due upon confirmation: ${formatMoney(total)}.`,

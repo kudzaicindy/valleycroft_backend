@@ -23,7 +23,7 @@ transactionLineSchema.pre('validate', function (next) {
 
 const transactionSchema = new mongoose.Schema({
   type: { type: String, enum: ['income', 'expense'], required: true },
-  category: String, // booking|salary|supplies|utilities|refund|supplier
+  category: String, // booking|catering|salary|supplies|utilities|refund|supplier
   description: String,
   amount: { type: Number, required: true },
   date: { type: Date, default: Date.now },
@@ -33,7 +33,7 @@ const transactionSchema = new mongoose.Schema({
   /** manual = cash-style journal; booking_confirm_* uses accrual Dr AR / Cr revenue */
   source: {
     type: String,
-    enum: ['manual', 'guest_booking_confirm', 'booking_confirm', 'debtor_payment'],
+    enum: ['manual', 'guest_booking_confirm', 'guest_booking_confirm_food', 'booking_confirm', 'debtor_payment'],
     default: 'manual',
   },
   /** cash: Dr Bank; accrual_ar: Dr Accounts Receivable (on booking confirmation) */

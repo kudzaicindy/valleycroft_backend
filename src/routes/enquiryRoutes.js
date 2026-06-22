@@ -4,7 +4,9 @@ const controller = require('../controllers/enquiryController');
 
 const router = express.Router();
 
-// Public guest endpoint
+// Public guest endpoints
+router.get('/food-add-ons', controller.getFoodAddOnCatalogue);
+router.get('/food-quote', controller.quoteEventFood);
 router.post('/', controller.createPublicEnquiry);
 
 // Admin/CEO/Finance management
