@@ -157,16 +157,20 @@ Returns rooms where `isAvailable === true`, sorted by `order`.
 
 ### Food add-ons (ZAR)
 
-| Add-on | Rate |
-|--------|------|
+Rates are **admin-configurable** (see **§4c**). Defaults:
+
+| Add-on | Default rate |
+|--------|----------------|
 | **Breakfast** | R 100 per person per morning |
 | **Picnic setup + hamper** | R 800 per person (one-time) |
 
-Breakfast is priced per **morning** (= number of nights). Example: 2 guests, 3 nights → R 100 × 2 × 3 = **R 600**.
+Breakfast is priced per **morning** (= number of nights). Example: 2 guests, 3 nights at R 100 → R 100 × 2 × 3 = **R 600**.
 
 ### GET `/api/guest-bookings/food-add-ons` (Public)
 
-**Response:** `{ success: true, data: [{ id, label, rateLabel, unitPrice, currency }] }`
+Alias of **`GET /api/food-add-ons`**. Returns active add-ons only.
+
+**Response:** `{ success: true, data: [{ id, label, rateLabel, unitPrice, billing, currency }] }`
 
 ### GET `/api/guest-bookings/quote` (Public)
 
@@ -212,7 +216,32 @@ Repair or post split revenue when a booking is already **confirmed** but food (o
 
 ---
 
-## 4b. Event enquiries — `/api/enquiries`
+## 4c. Food add-on pricing (admin) — `/api/food-add-ons`
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| GET | `/api/food-add-ons` | Public | Active add-ons + current rates |
+| GET | `/api/food-add-ons/manage` | Admin | All add-ons (incl. inactive) + timestamps |
+| PUT | `/api/food-add-ons/:addOnId` | Admin | Update label, price, or visibility |
+
+Same routes under **`/api/admin/food-add-ons`**.
+
+**`:addOnId`:** `breakfast` or `picnic`
+
+### PUT `/api/food-add-ons/:addOnId` (Admin)
+
+**Body:** `{ label?: string, unitPrice?: number, isActive?: boolean }`
+
+**Example — breakfast to R 120:**
+```json
+{ "unitPrice": 120 }
+```
+
+**Response:** `{ success: true, data: { id, label, unitPrice, rateLabel, billing, isActive } }`
+
+Price changes apply to **new quotes and bookings** only; confirmed bookings keep their stored amounts.
+
+---
 
 | Method | Endpoint                      | Access     | Description              |
 |--------|-------------------------------|------------|--------------------------|

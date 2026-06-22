@@ -4,7 +4,7 @@
 const Invoice = require('../models/Invoice');
 const Debtor = require('../models/Debtor');
 const Room = require('../models/Room');
-const { FOOD_ADD_ONS } = require('../constants/foodAddOns');
+const foodAddOnService = require('./foodAddOnService');
 
 function addDays(d, n) {
   const x = new Date(d);
@@ -18,7 +18,7 @@ function formatMoney(n) {
 }
 
 function foodLineDescription(item) {
-  const def = FOOD_ADD_ONS[item.id];
+  const def = foodAddOnService.getFoodAddOn(item.id);
   const label = item.label || def?.label || 'Food add-on';
   if (item.rateLabel) return `${label} (${item.rateLabel})`;
   if (def?.rateLabel) return `${label} (${def.rateLabel})`;

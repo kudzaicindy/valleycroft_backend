@@ -15,7 +15,7 @@ const {
   resolveBookingAmounts,
   pricingBreakdownFromAmounts,
 } = require('../utils/foodAddOnPricing');
-const { FOOD_ADD_ONS } = require('../constants/foodAddOns');
+const foodAddOnService = require('../services/foodAddOnService');
 const crypto = require('crypto');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -63,11 +63,14 @@ function inferGuestCountFromFoodAmount(foodAddOns, nights, foodAmount) {
   const breakfast = foodAddOns.breakfast;
   const picnic = foodAddOns.picnic;
   if (breakfast && !picnic) {
-    const perGuest = FOOD_ADD_ONS.breakfast.unitPrice * morningCount;
+    const breakfastDef = foodAddOnService.getFoodAddOn('breakfast');
+    const perGuest = (breakfastDef?.unitPrice || 100) * morningCount;
     if (perGuest > 0) return Math.max(1, Math.round(amount / perGuest));
   }
   if (picnic && !breakfast) {
-    return Math.max(1, Math.round(amount / FOOD_ADD_ONS.picnic.unitPrice));
+    const picnicDef = foodAddOnService.getFoodAddOn('picnic');
+    const perGuest = picnicDef?.unitPrice || 800;
+    return Math.max(1, Math.round(amount / perGuest));
   }
   return 0;
 }

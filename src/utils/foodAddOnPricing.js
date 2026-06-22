@@ -1,5 +1,13 @@
-const { FOOD_ADD_ONS, FOOD_ADD_ON_IDS } = require('../constants/foodAddOns');
+const foodAddOnService = require('../services/foodAddOnService');
 const { round2 } = require('./math');
+
+function addonIds() {
+  return foodAddOnService.getAllFoodAddOnIds();
+}
+
+function getAddon(id) {
+  return foodAddOnService.getFoodAddOn(id);
+}
 
 function bookingNights(checkIn, checkOut) {
   return Math.ceil((new Date(checkOut) - new Date(checkIn)) / (1000 * 60 * 60 * 24)) || 1;
@@ -13,13 +21,13 @@ function parseFoodAddOns(input) {
   if (Array.isArray(input)) {
     for (const item of input) {
       const key = String(item || '').trim().toLowerCase();
-      if (FOOD_ADD_ON_IDS.includes(key)) selected[key] = true;
+      if (addonIds().includes(key)) selected[key] = true;
     }
     return selected;
   }
 
   if (typeof input === 'object') {
-    for (const id of FOOD_ADD_ON_IDS) {
+    for (const id of addonIds()) {
       const v = input[id];
       if (v === true || v === 'true' || v === '1' || v === 1) selected[id] = true;
     }
@@ -30,12 +38,12 @@ function parseFoodAddOns(input) {
   if (single.includes(',')) {
     return parseFoodAddOns(single.split(',').map((s) => s.trim()));
   }
-  if (FOOD_ADD_ON_IDS.includes(single)) selected[single] = true;
+  if (addonIds().includes(single)) selected[single] = true;
   return selected;
 }
 
 function hasAnyFoodAddOn(selected) {
-  return FOOD_ADD_ON_IDS.some((id) => selected[id]);
+  return addonIds().some((id) => selected[id]);
 }
 
 /**
@@ -48,29 +56,33 @@ function computeFoodAddOnLines({ guestCount, nights, selected }) {
   const lineItems = [];
 
   if (selected.breakfast && persons > 0) {
-    const def = FOOD_ADD_ONS.breakfast;
-    const qty = persons * morningCount;
-    lineItems.push({
-      id: def.id,
-      label: def.label,
-      rateLabel: def.rateLabel,
-      unitPrice: def.unitPrice,
-      qty,
-      total: round2(def.unitPrice * qty),
-    });
+    const def = getAddon('breakfast');
+    if (def?.isActive !== false) {
+      const qty = persons * morningCount;
+      lineItems.push({
+        id: def.id,
+        label: def.label,
+        rateLabel: def.rateLabel,
+        unitPrice: def.unitPrice,
+        qty,
+        total: round2(def.unitPrice * qty),
+      });
+    }
   }
 
   if (selected.picnic && persons > 0) {
-    const def = FOOD_ADD_ONS.picnic;
-    const qty = persons;
-    lineItems.push({
-      id: def.id,
-      label: def.label,
-      rateLabel: def.rateLabel,
-      unitPrice: def.unitPrice,
-      qty,
-      total: round2(def.unitPrice * qty),
-    });
+    const def = getAddon('picnic');
+    if (def?.isActive !== false) {
+      const qty = persons;
+      lineItems.push({
+        id: def.id,
+        label: def.label,
+        rateLabel: def.rateLabel,
+        unitPrice: def.unitPrice,
+        qty,
+        total: round2(def.unitPrice * qty),
+      });
+    }
   }
 
   const foodTotal = round2(lineItems.reduce((sum, li) => sum + li.total, 0));
@@ -140,16 +152,7 @@ function computeEventFoodQuote({ guestCount, foodAddOns }) {
 }
 
 function catalogueForApi() {
-  return FOOD_ADD_ON_IDS.map((id) => {
-    const def = FOOD_ADD_ONS[id];
-    return {
-      id: def.id,
-      label: def.label,
-      rateLabel: def.rateLabel,
-      unitPrice: def.unitPrice,
-      currency: 'ZAR',
-    };
-  });
+  return foodAddOnService.catalogueForApi({ activeOnly: true });
 }
 
 /**
@@ -253,8 +256,6 @@ function getGuestBookingRevenueSplit(gb) {
 }
 
 module.exports = {
-  FOOD_ADD_ONS,
-  FOOD_ADD_ON_IDS,
   bookingNights,
   parseFoodAddOns,
   hasAnyFoodAddOn,

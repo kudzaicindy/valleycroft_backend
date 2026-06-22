@@ -44,6 +44,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Public routes (no auth)
 app.use('/api/rooms', require('./src/routes/roomRoutes'));
+app.use('/api/food-add-ons', require('./src/routes/foodAddOnRoutes'));
 app.use('/api/guest-bookings', require('./src/routes/guestBookingRoutes'));
 app.use('/api/payfast', require('./src/routes/payfastRoutes'));
 
@@ -78,6 +79,7 @@ app.use('/api/admin/reports', require('./src/routes/reportRoutes'));
 app.use('/api/admin/audit', require('./src/routes/auditRoutes'));
 app.use('/api/admin/emails', require('./src/routes/emailRoutes'));
 app.use('/api/admin/enquiries', require('./src/routes/enquiryRoutes'));
+app.use('/api/admin/food-add-ons', require('./src/routes/foodAddOnRoutes'));
 
 /** Finance & ledger UIs: redirect /api/admin/* → canonical APIs (308, path + query preserved). */
 app.use('/api/admin/accounting/v3', redirectPreservePath('/api/admin/accounting/v3', '/api/accounting/v3'));
@@ -113,6 +115,8 @@ app.use((err, req, res, next) => {
 
 async function start() {
   await connectDB();
+  const { initFoodAddOns } = require('./src/services/foodAddOnService');
+  await initFoodAddOns();
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
