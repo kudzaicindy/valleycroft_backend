@@ -603,7 +603,7 @@ async function deliverInvoiceEmail(payload) {
   const emailPayload = await normalizeConfirmationEmailPayload(payload);
   const { html, text } = mailTemplates.bookingConfirmedInvoiceGuest(emailPayload);
   const biz = mailTemplates.bizName();
-  const subject = `${biz} — Booking confirmed · Invoice ${payload.invoiceNumber}`;
+  const subject = `${biz} — Booking confirmed · ${emailPayload.roomName || 'Your stay'}`;
   const result = await sendMail({
     to,
     subject,
