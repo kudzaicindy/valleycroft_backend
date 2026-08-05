@@ -537,8 +537,17 @@ Read-only. No POST/PUT/DELETE.
 | GET    | `/api/audit/entity/:name`  | Admin, CEO, Finance |
 | GET    | `/api/audit/user/:id`      | Admin, CEO          |
 
-**GET** `/api/audit?userId=...&entity=...&start=...&end=...&page=1&limit=20`  
-**Response:** `{ success: true, data: [...], meta }` — each item: userId, role, action, entity, entityId, before, after, ip, userAgent, timestamp.
+**GET** `/api/audit?userId=...&entity=...&action=...&start=...&end=...&page=1&limit=20`  
+**Response:** `{ success: true, data: [...], meta }` — each item includes:
+
+| Field | Meaning |
+|--------|---------|
+| `userEmail` / `userName` / `user` | Actor identity (email preferred over raw id) |
+| `userId` | User ObjectId string |
+| `summary` | Short human line, e.g. `Updated Booking: status, notes` |
+| `changes` | On **update**: `[{ field, from, to }, ...]` |
+| `deleted` | On **delete**: full previous document snapshot |
+| `before` / `after` | Full snapshots (passwords stripped) |
 
 **GET** `/api/audit/entity/Booking` — all actions for that entity type.
 
