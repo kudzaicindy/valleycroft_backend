@@ -88,7 +88,7 @@ function trackingHint(trackingCode, guestEmail) {
 /** Days before check-in that guest must cancel by for a refund (override via env). */
 function cancellationRefundDaysBeforeCheckIn() {
   const n = Number(process.env.MAIL_CANCELLATION_REFUND_DAYS_BEFORE_CHECKIN);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 14;
 }
 
 /** Full policy text for guest emails; override with MAIL_CANCELLATION_POLICY in .env */
