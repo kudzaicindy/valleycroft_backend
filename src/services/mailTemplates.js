@@ -75,6 +75,37 @@ function formatDate(d) {
   }
 }
 
+function formatDateTime(d) {
+  if (!d) return '—';
+  try {
+    return new Date(d).toLocaleString('en-ZA', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return String(d);
+  }
+}
+
+/** Calendar days after confirmation that payment is due (override via env). Default 1: confirmed 19 Aug → due 20 Aug. */
+function paymentDueDaysAfterConfirm() {
+  const n = Number(process.env.MAIL_PAYMENT_DUE_DAYS_AFTER_CONFIRM);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function paymentDueDateFromConfirm(payload = {}) {
+  const baseRaw = payload.confirmedAt || payload.respondedAt || new Date();
+  const base = new Date(baseRaw);
+  if (Number.isNaN(base.getTime())) return null;
+  const due = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  due.setDate(due.getDate() + paymentDueDaysAfterConfirm());
+  return due;
+}
+
 function trackingHint(trackingCode, guestEmail) {
   const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
   if (base && trackingCode && guestEmail) {
@@ -96,7 +127,7 @@ function cancellationPolicyText() {
   const custom = (process.env.MAIL_CANCELLATION_POLICY || '').trim();
   if (custom) return custom;
   const days = cancellationRefundDaysBeforeCheckIn();
-  return `Your deposit is the full amount for your stay and is due as soon as your booking is confirmed. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
+  return `The full amount for your stay is due by the day after confirmation. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
 }
 
 /** Confirmation email — includes check-in and refund deadline when dates are known. */
@@ -105,13 +136,17 @@ function cancellationPolicyTextForBooking(payload = {}) {
   const days = cancellationRefundDaysBeforeCheckIn();
   let text =
     custom ||
-    `Your deposit is the full amount for your stay and is due as soon as your booking is confirmed. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
+    `The full amount for your stay is due by the day after confirmation. Refunds are only available if you cancel at least ${days} days before your check-in date. Cancellations within ${days} days of check-in are non-refundable.`;
 
   const checkIn = payload.checkIn ? new Date(payload.checkIn) : null;
   if (checkIn && !Number.isNaN(checkIn.getTime())) {
     const deadline = new Date(checkIn);
     deadline.setDate(deadline.getDate() - days);
     text += `\n\nFor this booking, cancel on or before ${formatDate(deadline)} to qualify for a refund.`;
+  }
+  const payBy = paymentDueDateFromConfirm(payload);
+  if (payBy) {
+    text += `\n\nPayment is due by ${formatDate(payBy)}.`;
   }
   return text;
 }
@@ -121,7 +156,7 @@ function cancellationPolicyPendingGuestText() {
   const custom = (process.env.MAIL_CANCELLATION_POLICY_PENDING || '').trim();
   if (custom) return custom;
   const days = cancellationRefundDaysBeforeCheckIn();
-  return `When we confirm your booking, the full amount for your stay will be due at that time. Refunds are only available if you cancel at least ${days} days before your check-in date.`;
+  return `When we confirm your booking, the full amount for your stay will be due by the next day. Refunds are only available if you cancel at least ${days} days before your check-in date.`;
 }
 
 function cancellationPolicyPendingGuestHtml() {
@@ -140,7 +175,7 @@ function cancellationPolicyPendingGuestHtml() {
 /** Short line for admin notification emails */
 function cancellationPolicySummary() {
   const days = cancellationRefundDaysBeforeCheckIn();
-  return `Full payment due on confirmation; refund only if cancelled ${days}+ days before check-in.`;
+  return `Full payment due by the day after confirmation; refund only if cancelled ${days}+ days before check-in.`;
 }
 
 function cancellationPolicyGuestHtml(payload = {}) {
@@ -288,7 +323,7 @@ function buildBankPaymentInstructionsText(trackingCode, guestName) {
   const payRef = bookingPaymentReference(trackingCode, guestName);
   const lines = [
     'How to pay (bank transfer / EFT)',
-    'Pay the full amount for your stay.',
+    'Pay the full amount for your stay by the day after confirmation.',
     `Account name: ${bank.accountName}`,
     `Bank: ${bank.bankName}`,
     `Branch code: ${bank.branchCode}`,
@@ -339,7 +374,7 @@ function buildBankPaymentInstructionsHtml(trackingCode, guestName) {
   }
 
   return `<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">How to pay</h2>
-<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Please pay by <strong>bank transfer / EFT</strong> using the client name and booking code shown below as the payment reference.</p>
+<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Please pay by <strong>bank transfer / EFT</strong> by the <strong>day after confirmation</strong>. Use the client name and booking code shown below as the payment reference.</p>
 ${bankTable}
 <h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Proof of payment</h2>
 <p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#243830;">Once paid, send us your <strong>proof of payment (POP)</strong> — a screenshot or PDF of your bank transfer — so we can confirm receipt:</p>
@@ -563,7 +598,7 @@ function newBookingRequestAdmin(payload) {
   rows.push(...buildPricingBreakdownRows(payload));
   rows.push(
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
-    detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
+    detailRow('Full amount (due the day after confirm)', formatMoney(confirmationDepositDue({
       total: payload.totalAmount,
       deposit: payload.deposit,
     }) || payload.totalAmount)),
@@ -599,7 +634,7 @@ function bookingRequestReceivedGuest(payload) {
   rows.push(...buildPricingBreakdownRows(payload));
   rows.push(
     detailRow('Estimated total', formatMoney(payload.totalAmount)),
-    detailRow('Full amount (due on confirm)', formatMoney(confirmationDepositDue({
+    detailRow('Full amount (due the day after confirm)', formatMoney(confirmationDepositDue({
       total: payload.totalAmount,
       deposit: payload.deposit,
     }) || payload.totalAmount)),
@@ -608,7 +643,7 @@ function bookingRequestReceivedGuest(payload) {
   const a = accent();
 
   const blocksHtml = `<p style="margin:0 0 16px;font-size:17px;line-height:1.55;color:#243830;">Thank you for choosing <strong style="color:#1a2e26;">${escapeHtml(bizName())}</strong>. We have received your request and will confirm availability as soon as we can.</p>
-<p style="margin:0 0 20px;padding:14px 18px;background:#fff9f0;border-radius:10px;border:1px solid #f0e6d8;font-size:15px;color:#5c5348;line-height:1.5;">Your booking is still <strong style="color:${a};">pending</strong> until you receive a confirmation from us. <strong>When we confirm, the full amount for your stay will be due at that time.</strong> Questions? Simply reply to this email.</p>
+<p style="margin:0 0 20px;padding:14px 18px;background:#fff9f0;border-radius:10px;border:1px solid #f0e6d8;font-size:15px;color:#5c5348;line-height:1.5;">Your booking is still <strong style="color:${a};">pending</strong> until you receive a confirmation from us. <strong>When we confirm, payment is due by the next day.</strong> Questions? Simply reply to this email.</p>
 ${tableHtml}
 ${cancellationPolicyPendingGuestHtml()}`;
   const blocksText = `Thank you for choosing ${bizName()}. We have received your request and will confirm availability shortly.\n\nYour booking is pending until we send a confirmation.\n\n${tableText}\n\nPayment & cancellation:\n${cancellationPolicyPendingGuestText()}`;
@@ -683,8 +718,9 @@ function bookingConfirmedInvoiceGuest(payload) {
   if (bal > 0.009) {
     rows.push(detailMoneyRow('Balance still due', bal));
   }
-  if (payload.dueDate) {
-    rows.push(detailRow('Payment due by', formatDate(payload.dueDate)));
+  const payBy = paymentDueDateFromConfirm(payload);
+  if (payBy) {
+    rows.push(detailRow('Payment due by', formatDate(payBy)));
   }
   const { html: metaHtml, text: metaText } = buildDetailTable(rows);
 
