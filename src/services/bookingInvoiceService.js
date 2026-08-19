@@ -80,7 +80,7 @@ async function guestLinePayload(gb) {
     total: subtotal || total,
     deposit: total,
     balanceDue: 0,
-    notes: `Booking ref: ${gb.trackingCode}. Full amount due by the day after confirmation: ${formatMoney(total)}.`,
+    notes: `Booking ref: ${gb.trackingCode}. Full amount due within 24 hours of confirmation: ${formatMoney(total)}.`,
   };
 }
 
