@@ -1,11 +1,18 @@
 const mongoose = require('mongoose');
 
+/** Canonical `type` values accepted when creating/updating a space. */
 const ROOM_TYPES = [
   'bnb',
   'event-space',
   'conference-venue',
   'event-venue',
   'garden-venue',
+  'wedding-venue',
+  'cottage',
+  'lodge',
+  'farmhouse',
+  'suite',
+  'other',
 ];
 
 const ROOM_TYPE_OPTIONS = [
@@ -21,10 +28,24 @@ const ROOM_TYPE_OPTIONS = [
 
 const SPACE_CATEGORY_OPTIONS = ['room', 'event-hire'];
 
-/** Accept common legacy/typo labels and normalize to canonical enum values. */
+/** Accept common labels / typos and normalize to canonical enum values. */
 const ROOM_TYPE_ALIASES = {
-  'wedding-venue': 'event-venue',
   'gaeden-venue': 'garden-venue',
+  'event': 'event-space',
+  'events': 'event-space',
+  'eventspace': 'event-space',
+  'event_space': 'event-space',
+  'bnb-room': 'bnb',
+  bedandbreakfast: 'bnb',
+  'bed-and-breakfast': 'bnb',
+  'b&b': 'bnb',
+  'b and b': 'bnb',
+  accommodation: 'bnb',
+  stay: 'bnb',
+  conference: 'conference-venue',
+  venue: 'event-venue',
+  garden: 'garden-venue',
+  wedding: 'wedding-venue',
 };
 
 const ROOM_TYPE_OPTION_ALIASES = {
@@ -35,7 +56,17 @@ const ROOM_TYPE_OPTION_ALIASES = {
 
 const SPACE_CATEGORY_ALIASES = {
   'event hire': 'event-hire',
+  eventhire: 'event-hire',
+  'event_hire': 'event-hire',
 };
+
+function normalizeEnumToken(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_/]+/g, '-')
+    .replace(/\s+/g, '-');
+}
 
 const roomImageSchema = new mongoose.Schema(
   {
@@ -76,16 +107,20 @@ const roomSchema = new mongoose.Schema(
 /** Legacy data may store `images` as plain URL strings */
 roomSchema.pre('validate', function (next) {
   if (this.type != null) {
-    const rawType = String(this.type).trim().toLowerCase();
-    this.type = ROOM_TYPE_ALIASES[rawType] || rawType;
+    const rawType = normalizeEnumToken(this.type);
+    this.type = ROOM_TYPE_ALIASES[rawType] || ROOM_TYPE_ALIASES[String(this.type).trim().toLowerCase()] || rawType;
   }
   if (this.roomType != null) {
     const rawRoomType = String(this.roomType).trim().toLowerCase();
-    this.roomType = ROOM_TYPE_OPTION_ALIASES[rawRoomType] || rawRoomType.replace(/\s+/g, '-');
+    this.roomType =
+      ROOM_TYPE_OPTION_ALIASES[rawRoomType] ||
+      normalizeEnumToken(this.roomType);
   }
   if (this.spaceCategory != null) {
     const rawCategory = String(this.spaceCategory).trim().toLowerCase();
-    this.spaceCategory = SPACE_CATEGORY_ALIASES[rawCategory] || rawCategory.replace(/\s+/g, '-');
+    this.spaceCategory =
+      SPACE_CATEGORY_ALIASES[rawCategory] ||
+      normalizeEnumToken(this.spaceCategory);
   }
   if (!Array.isArray(this.images)) {
     this.images = [];
@@ -112,3 +147,6 @@ roomSchema.index({ featuredOnLanding: 1, landingOrder: 1 });
 roomSchema.index({ isAvailable: 1, order: 1 });
 
 module.exports = mongoose.model('Room', roomSchema);
+module.exports.ROOM_TYPES = ROOM_TYPES;
+module.exports.ROOM_TYPE_OPTIONS = ROOM_TYPE_OPTIONS;
+module.exports.SPACE_CATEGORY_OPTIONS = SPACE_CATEGORY_OPTIONS;

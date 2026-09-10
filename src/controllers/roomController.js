@@ -1,4 +1,5 @@
 const Room = require('../models/Room');
+const { ROOM_TYPES, ROOM_TYPE_OPTIONS, SPACE_CATEGORY_OPTIONS } = Room;
 const GuestBooking = require('../models/GuestBooking');
 const Booking = require('../models/Booking');
 const { asyncHandler } = require('../utils/helpers');
@@ -6,6 +7,24 @@ const logAudit = require('../utils/audit');
 const { isRoomAvailableForDates, getBookingsForRoomInRange } = require('../utils/availability');
 const { uploadToS3, getUploadKey } = require('../middleware/upload');
 const { ensureUniqueRoomSlug } = require('../utils/slug');
+
+function roomValidationError(err) {
+  if (!err || err.name !== 'ValidationError') return null;
+  const messages = Object.values(err.errors || {}).map((e) => e.message);
+  const typeErr = err.errors?.type;
+  return {
+    success: false,
+    message: messages.join('; ') || err.message,
+    ...(typeErr
+      ? {
+          field: 'type',
+          allowedTypes: ROOM_TYPES,
+          allowedRoomTypes: ROOM_TYPE_OPTIONS,
+          allowedSpaceCategories: SPACE_CATEGORY_OPTIONS,
+        }
+      : {}),
+  };
+}
 
 const ROOM_FIELDS = [
   'name',
@@ -267,14 +286,25 @@ const getRoomBookings = asyncHandler(async (req, res) => {
 const createRoom = asyncHandler(async (req, res) => {
   const payload = pickRoomPayload(req.body);
   if (!payload.name || !payload.type) {
-    return res.status(400).json({ success: false, message: 'name and type are required' });
+    return res.status(400).json({
+      success: false,
+      message: 'name and type are required',
+      allowedTypes: ROOM_TYPES,
+    });
   }
   if (payload.slug) {
     payload.slug = String(payload.slug).trim().toLowerCase();
   } else {
     payload.slug = await ensureUniqueRoomSlug(Room, payload.name);
   }
-  const room = await Room.create(payload);
+  let room;
+  try {
+    room = await Room.create(payload);
+  } catch (err) {
+    const payloadErr = roomValidationError(err);
+    if (payloadErr) return res.status(400).json(payloadErr);
+    throw err;
+  }
   await logAudit({
     userId: req.user._id,
     role: req.user.role,
@@ -305,7 +335,13 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (!room.slug && room.name) {
     room.slug = await ensureUniqueRoomSlug(Room, room.name, room._id);
   }
-  await room.save();
+  try {
+    await room.save();
+  } catch (err) {
+    const payloadErr = roomValidationError(err);
+    if (payloadErr) return res.status(400).json(payloadErr);
+    throw err;
+  }
   await logAudit({
     userId: req.user._id,
     role: req.user.role,
