@@ -257,7 +257,7 @@ const createGuestBooking = asyncHandler(async (req, res) => {
   }
   const available = await isRoomAvailableForDates(resolvedRoomId, checkIn, checkOut);
   if (!available) {
-    return res.status(400).json({ success: false, message: 'Room is already booked for the selected dates' });
+    return res.status(400).json({ success: false, message: 'Room is not available for the selected dates' });
   }
   const nights = Math.ceil((new Date(checkOut) - new Date(checkIn)) / (1000 * 60 * 60 * 24)) || 1;
   const pricePerNight = Number(room.pricePerNight);

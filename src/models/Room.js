@@ -98,6 +98,21 @@ const roomSchema = new mongoose.Schema(
     /** Sort order within landing gallery (lower first) */
     landingOrder: { type: Number, default: 0 },
     isAvailable: { type: Boolean, default: true },
+    /**
+     * Calendar days admins have closed for booking (YYYY-MM-DD).
+     * A stay that includes any of these nights (check-in inclusive, check-out exclusive) is unavailable.
+     */
+    blockedDates: {
+      type: [String],
+      default: [],
+      validate: {
+        validator(arr) {
+          if (!Array.isArray(arr)) return false;
+          return arr.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d)));
+        },
+        message: 'blockedDates must be YYYY-MM-DD strings',
+      },
+    },
     /** Sort order on public rooms list */
     order: { type: Number, default: 0 },
   },
@@ -121,6 +136,17 @@ roomSchema.pre('validate', function (next) {
     this.spaceCategory =
       SPACE_CATEGORY_ALIASES[rawCategory] ||
       normalizeEnumToken(this.spaceCategory);
+  }
+  if (this.blockedDates != null) {
+    const seen = new Set();
+    this.blockedDates = (Array.isArray(this.blockedDates) ? this.blockedDates : [])
+      .map((d) => String(d || '').trim().slice(0, 10))
+      .filter((d) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || seen.has(d)) return false;
+        seen.add(d);
+        return true;
+      })
+      .sort();
   }
   if (!Array.isArray(this.images)) {
     this.images = [];

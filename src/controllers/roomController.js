@@ -39,11 +39,31 @@ const ROOM_FIELDS = [
   'amenities',
   'images',
   'isAvailable',
+  'blockedDates',
   'order',
   'featuredOnLanding',
   'landingOrder',
   'slug',
 ];
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizeBlockedDatesInput(value) {
+  if (value == null) return value;
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of value) {
+    const d = String(item || '')
+      .trim()
+      .slice(0, 10);
+    if (!DATE_ONLY_RE.test(d) || seen.has(d)) continue;
+    seen.add(d);
+    out.push(d);
+  }
+  out.sort();
+  return out;
+}
 
 function normalizeAmenitiesInput(value) {
   if (!Array.isArray(value)) return value;
@@ -67,6 +87,9 @@ function pickRoomPayload(body) {
   if (out.amenities !== undefined) {
     out.amenities = normalizeAmenitiesInput(out.amenities);
   }
+  if (out.blockedDates !== undefined) {
+    out.blockedDates = normalizeBlockedDatesInput(out.blockedDates);
+  }
   return out;
 }
 
@@ -80,7 +103,7 @@ function s3Configured() {
 }
 
 const publicSelect =
-  'name slug description type roomType spaceCategory beds bathrooms capacity pricePerNight amenities images order featuredOnLanding landingOrder isAvailable _id createdAt updatedAt';
+  'name slug description type roomType spaceCategory beds bathrooms capacity pricePerNight amenities images order featuredOnLanding landingOrder isAvailable blockedDates _id createdAt updatedAt';
 
 function imageBaseUrlFromReq(req) {
   const explicit = String(process.env.ASSET_BASE_URL || process.env.PUBLIC_BASE_URL || '').trim();
@@ -285,6 +308,12 @@ const getRoomBookings = asyncHandler(async (req, res) => {
 
 const createRoom = asyncHandler(async (req, res) => {
   const payload = pickRoomPayload(req.body);
+  if (req.body.blockedDates !== undefined && payload.blockedDates === null) {
+    return res.status(400).json({
+      success: false,
+      message: 'blockedDates must be an array of YYYY-MM-DD strings',
+    });
+  }
   if (!payload.name || !payload.type) {
     return res.status(400).json({
       success: false,
@@ -322,6 +351,12 @@ const updateRoom = asyncHandler(async (req, res) => {
   if (!room) return res.status(404).json({ success: false, message: 'Room not found' });
   const before = room.toObject();
   const payload = pickRoomPayload(req.body);
+  if (req.body.blockedDates !== undefined && payload.blockedDates === null) {
+    return res.status(400).json({
+      success: false,
+      message: 'blockedDates must be an array of YYYY-MM-DD strings',
+    });
+  }
   if (payload.slug !== undefined) {
     payload.slug = String(payload.slug).trim().toLowerCase();
     const taken = await Room.findOne({ slug: payload.slug, _id: { $ne: room._id } })

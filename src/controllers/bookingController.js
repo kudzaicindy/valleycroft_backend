@@ -80,14 +80,14 @@ async function validateRoomAvailability(payload, excludeBookingId = null) {
 
   if (type === 'bnb') {
     const available = await isRoomAvailableForDates(payload.roomId, payload.checkIn, payload.checkOut, null, excludeBookingId);
-    if (!available) return 'Room is already booked for the selected dates';
+    if (!available) return 'Room is not available for the selected dates';
   } else if (type === 'event' && isValidDateInput(payload.eventDate)) {
     const eventStart = new Date(payload.eventDate);
     eventStart.setUTCHours(0, 0, 0, 0);
     const eventEnd = new Date(payload.eventDate);
     eventEnd.setUTCHours(23, 59, 59, 999);
     const available = await isRoomAvailableForDates(payload.roomId, eventStart, eventEnd, null, excludeBookingId);
-    if (!available) return 'Room is already booked for the selected event date';
+    if (!available) return 'Room is not available for the selected event date';
   }
   return null;
 }

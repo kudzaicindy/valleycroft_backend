@@ -2,8 +2,47 @@ const GuestBooking = require('../models/GuestBooking');
 const Booking = require('../models/Booking');
 const Room = require('../models/Room');
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Calendar YYYY-MM-DD in UTC for a Date / parseable string. */
+function toDateOnlyUtc(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Nights occupied by a stay: each calendar day from check-in inclusive through check-out exclusive.
+ * Same calendar day (e.g. event hire) counts as that single day.
+ * @returns {string[]} YYYY-MM-DD
+ */
+function nightsInRange(checkIn, checkOut) {
+  const start = toDateOnlyUtc(checkIn);
+  const end = toDateOnlyUtc(checkOut);
+  if (!start || !end || start > end) return [];
+  if (start === end) return [start];
+  const nights = [];
+  const cursor = new Date(`${start}T00:00:00.000Z`);
+  const endMs = Date.parse(`${end}T00:00:00.000Z`);
+  while (cursor.getTime() < endMs) {
+    nights.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return nights;
+}
+
+function roomHasBlockedOverlap(blockedDates, checkIn, checkOut) {
+  if (!Array.isArray(blockedDates) || !blockedDates.length) return false;
+  const blocked = new Set(
+    blockedDates.map((d) => String(d || '').trim().slice(0, 10)).filter((d) => DATE_ONLY_RE.test(d))
+  );
+  if (!blocked.size) return false;
+  return nightsInRange(checkIn, checkOut).some((night) => blocked.has(night));
+}
+
 /**
  * Check if a room is free for the given date range (excludes cancelled guest bookings).
+ * Also returns false if any night in [checkIn, checkOut) is in the room's blockedDates.
  * @param {ObjectId|string} roomId - Room _id
  * @param {Date|string} checkIn - Start date
  * @param {Date|string} checkOut - End date
@@ -14,6 +53,10 @@ const Room = require('../models/Room');
 async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBookingId = null, excludeBookingId = null) {
   const start = new Date(checkIn);
   const end = new Date(checkOut);
+  const room = await Room.findById(roomId).lean().select('blockedDates');
+  if (!room) return false;
+  if (roomHasBlockedOverlap(room.blockedDates, start, end)) return false;
+
   const guestQuery = {
     roomId,
     status: { $nin: ['cancelled'] },
@@ -73,4 +116,9 @@ async function getBookingsForRoomInRange(roomId, checkIn, checkOut) {
   ];
 }
 
-module.exports = { isRoomAvailableForDates, getBookingsForRoomInRange };
+module.exports = {
+  isRoomAvailableForDates,
+  getBookingsForRoomInRange,
+  nightsInRange,
+  roomHasBlockedOverlap,
+};
