@@ -34,6 +34,44 @@ const upload = multer({
   fileFilter,
 });
 
+/** Common FormData keys used by admin UIs for room gallery uploads. */
+const ROOM_IMAGE_FIELD_NAMES = ['images', 'image', 'file', 'files', 'photo', 'photos'];
+
+/**
+ * Accept several multipart field names and normalize to `req.files` (array).
+ * Avoids Multer "Unexpected field" when the client uses `image` / `file` / etc.
+ */
+const uploadRoomImagesMiddleware = (req, res, next) => {
+  const handler = upload.fields(ROOM_IMAGE_FIELD_NAMES.map((name) => ({ name, maxCount: 15 })));
+  handler(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).json({
+          success: false,
+          message: `Unexpected field "${err.field}". Use one of: ${ROOM_IMAGE_FIELD_NAMES.join(', ')}`,
+          allowedFields: ROOM_IMAGE_FIELD_NAMES,
+        });
+      }
+      if (err instanceof multer.MulterError || err.message === 'Unexpected field') {
+        return res.status(400).json({
+          success: false,
+          message: err.message || 'Upload failed',
+          allowedFields: ROOM_IMAGE_FIELD_NAMES,
+        });
+      }
+      return next(err);
+    }
+    const grouped = req.files && !Array.isArray(req.files) ? req.files : {};
+    const flat = [];
+    for (const name of ROOM_IMAGE_FIELD_NAMES) {
+      if (Array.isArray(grouped[name])) flat.push(...grouped[name]);
+    }
+    if (Array.isArray(req.files)) flat.push(...req.files);
+    req.files = flat.slice(0, 15);
+    return next();
+  });
+};
+
 const uploadToS3 = async (buffer, key, mimetype) => {
   const command = new PutObjectCommand({
     Bucket: AWS_S3_BUCKET,
@@ -50,4 +88,10 @@ const getUploadKey = (originalName, prefix = 'uploads') => {
   return `${prefix}/${uuidv4()}${ext}`;
 };
 
-module.exports = { upload, uploadToS3, getUploadKey };
+module.exports = {
+  upload,
+  uploadRoomImagesMiddleware,
+  uploadToS3,
+  getUploadKey,
+  ROOM_IMAGE_FIELD_NAMES,
+};

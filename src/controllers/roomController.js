@@ -423,7 +423,7 @@ const updateRoom = asyncHandler(async (req, res) => {
   res.json({ success: true, data: room });
 });
 
-/** POST multipart: field name `images` (max 15 files). Appends to room.images after S3 upload. */
+/** POST multipart: field `images` (also accepts image/file/files/photo/photos). Appends after S3 upload. */
 const uploadRoomImages = asyncHandler(async (req, res) => {
   if (!s3Configured()) {
     return res.status(503).json({
@@ -436,7 +436,10 @@ const uploadRoomImages = asyncHandler(async (req, res) => {
   if (!room) return res.status(404).json({ success: false, message: 'Room not found' });
   const files = req.files || [];
   if (!files.length) {
-    return res.status(400).json({ success: false, message: 'No image files (use field name "images")' });
+    return res.status(400).json({
+      success: false,
+      message: 'No image files. Use multipart FormData with field name images (or image, file, files, photo, photos)',
+    });
   }
   const maxOrder = (room.images || []).reduce((m, im) => Math.max(m, Number(im.order) || 0), -1);
   const imageCountBefore = room.images.length;

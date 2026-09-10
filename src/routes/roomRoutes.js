@@ -1,6 +1,6 @@
 const express = require('express');
 const { protect, authorize } = require('../middleware/auth');
-const { upload } = require('../middleware/upload');
+const { uploadRoomImagesMiddleware } = require('../middleware/upload');
 const {
   getRooms,
   getRoomsManage,
@@ -33,12 +33,7 @@ router.get('/:id', getRoomById);
 router.post('/', ...roomManage, createRoom);
 router.put('/:id', ...roomManage, updateRoom);
 router.delete('/:id', ...roomManage, deleteRoom);
-router.post(
-  '/:id/images',
-  ...roomManage,
-  upload.array('images', 15),
-  uploadRoomImages
-);
+router.post('/:id/images', ...roomManage, uploadRoomImagesMiddleware, uploadRoomImages);
 router.delete('/:id/images', ...roomManage, removeRoomImages);
 
 module.exports = router;
