@@ -79,7 +79,27 @@ function normalizeAmenitiesInput(value) {
     .filter(Boolean);
 }
 
-function pickRoomPayload(body) {
+function normalizeImagesInput(value) {
+  if (!Array.isArray(value)) return null;
+  return value
+    .map((img, i) => {
+      if (typeof img === 'string') {
+        const url = img.trim();
+        return url ? { url, caption: '', order: i } : null;
+      }
+      if (img && typeof img === 'object' && img.url) {
+        return {
+          url: String(img.url).trim(),
+          caption: String(img.caption || '').trim(),
+          order: Number.isFinite(Number(img.order)) ? Number(img.order) : i,
+        };
+      }
+      return null;
+    })
+    .filter((img) => img && img.url);
+}
+
+function pickRoomPayload(body, { allowEmptyImages = true } = {}) {
   const out = {};
   for (const k of ROOM_FIELDS) {
     if (body[k] !== undefined) out[k] = body[k];
@@ -89,6 +109,17 @@ function pickRoomPayload(body) {
   }
   if (out.blockedDates !== undefined) {
     out.blockedDates = normalizeBlockedDatesInput(out.blockedDates);
+  }
+  if (out.images !== undefined) {
+    const normalized = normalizeImagesInput(out.images);
+    if (normalized === null) {
+      delete out.images;
+    } else if (!normalized.length && !allowEmptyImages) {
+      // Stale admin forms often PUT images:[] right after upload and wipe the gallery.
+      delete out.images;
+    } else {
+      out.images = normalized;
+    }
   }
   return out;
 }
@@ -350,7 +381,9 @@ const updateRoom = asyncHandler(async (req, res) => {
   const room = await Room.findById(req.params.id);
   if (!room) return res.status(404).json({ success: false, message: 'Room not found' });
   const before = room.toObject();
-  const payload = pickRoomPayload(req.body);
+  // Do not apply empty images[] on PUT — gallery is managed via POST/DELETE …/images.
+  // Admin UIs often save the room form (with stale images:[]) immediately after upload.
+  const payload = pickRoomPayload(req.body, { allowEmptyImages: false });
   if (req.body.blockedDates !== undefined && payload.blockedDates === null) {
     return res.status(400).json({
       success: false,
