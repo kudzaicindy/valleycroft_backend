@@ -23,6 +23,20 @@ function resolveMailLogoFile() {
   }
   return null;
 }
+
+/** Read PNG IHDR width/height without extra deps. */
+function readPngSize(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(24);
+    fs.readSync(fd, buf, 0, 24, 0);
+    fs.closeSync(fd);
+    if (buf[0] !== 0x89 || buf.toString('ascii', 1, 4) !== 'PNG') return null;
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  } catch {
+    return null;
+  }
+}
 const QUOTATION_UPDATE_FIELDS = [
   'quotationNumber',
   'clientName',
@@ -122,7 +136,7 @@ function buildQuotationPdfBuffer(quotation) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
-      margin: 36,
+      margins: { top: 24, bottom: 28, left: 36, right: 36 },
       info: {
         Title: `Quotation ${quotation.quotationNumber || ''}`.trim(),
         Author: 'ValleyCroft Farm',
@@ -141,137 +155,142 @@ function buildQuotationPdfBuffer(quotation) {
     const ink = '#1f2937';
     const muted = '#6b7280';
     const line = '#e5e7eb';
-    const gap = 10;
+    const gap = 8;
 
-    function ensureSpace(minHeight = 24) {
+    function ensureSpace(minHeight = 20) {
       if (doc.y + minHeight > doc.page.height - doc.page.margins.bottom) {
         doc.addPage();
       }
     }
 
     function sectionTitle(title) {
-      ensureSpace(26);
+      ensureSpace(22);
       const titleY = doc.y;
-      doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text(String(title).toUpperCase(), left, titleY, {
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brand).text(String(title).toUpperCase(), left, titleY, {
         width: contentWidth,
-        characterSpacing: 0.5,
+        characterSpacing: 0.45,
       });
-      const y = titleY + 14;
-      doc.strokeColor(brand).lineWidth(1.25).moveTo(left, y).lineTo(left + 36, y).stroke();
-      doc.strokeColor(line).lineWidth(0.8).moveTo(left + 42, y).lineTo(right, y).stroke();
-      doc.y = y + 8;
+      const y = titleY + 12;
+      doc.strokeColor(brand).lineWidth(1.2).moveTo(left, y).lineTo(left + 32, y).stroke();
+      doc.strokeColor(line).lineWidth(0.7).moveTo(left + 38, y).lineTo(right, y).stroke();
+      doc.y = y + 6;
     }
 
     function drawPanel(x, y, w, h) {
       doc.save();
-      doc.roundedRect(x, y, w, h, 8).fillAndStroke('#ffffff', line);
+      doc.roundedRect(x, y, w, h, 6).fillAndStroke('#ffffff', line);
       doc.restore();
     }
 
     function kv(x, y, label, value, width) {
-      doc.font('Helvetica').fontSize(7.5).fillColor(muted).text(String(label).toUpperCase(), x, y, {
+      doc.font('Helvetica').fontSize(7).fillColor(muted).text(String(label).toUpperCase(), x, y, {
         width,
-        characterSpacing: 0.3,
+        characterSpacing: 0.25,
       });
-      doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text(String(value || '—'), x, y + 10, {
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(ink).text(String(value || '—'), x, y + 9, {
         width,
       });
     }
 
-    // ── Header (centered logo + subtitle) ───────────────────
+    // ── Header: wide wordmark (logo is ~801x272), not a square box ──
     const logoFile = resolveMailLogoFile();
     const headerTop = doc.y;
-    const logoSize = 96;
+    const logoMaxW = Math.min(260, contentWidth * 0.55);
+    const logoMaxH = 78;
     let headerBottom = headerTop;
 
     if (logoFile) {
       try {
-        const logoX = left + (contentWidth - logoSize) / 2;
-        doc.image(logoFile, logoX, headerTop, { fit: [logoSize, logoSize], align: 'center', valign: 'center' });
-        headerBottom = headerTop + logoSize;
+        const natural = readPngSize(logoFile) || { width: 801, height: 272 };
+        const scale = Math.min(logoMaxW / natural.width, logoMaxH / natural.height);
+        const drawW = Math.round(natural.width * scale);
+        const drawH = Math.round(natural.height * scale);
+        const logoX = left + (contentWidth - drawW) / 2;
+        doc.image(logoFile, logoX, headerTop, { width: drawW, height: drawH });
+        headerBottom = headerTop + drawH;
       } catch (err) {
         console.warn('[quotation pdf] logo embed failed:', err?.message || err);
       }
     }
 
-    doc.font('Helvetica').fontSize(10).fillColor(muted).text(
+    doc.font('Helvetica').fontSize(9.5).fillColor(muted).text(
       'Agro-Tourism Event Quotation',
       left,
-      headerBottom + 4,
+      headerBottom + 3,
       { width: contentWidth, align: 'center' }
     );
-    doc.y = headerBottom + 20;
+    doc.y = headerBottom + 16;
 
     // Quote number banner
-    ensureSpace(34);
+    ensureSpace(28);
     const bannerY = doc.y;
-    doc.roundedRect(left, bannerY, contentWidth, 30, 6).fill(brand);
-    doc.font('Helvetica-Bold').fontSize(11).fillColor('#ffffff').text(
+    doc.roundedRect(left, bannerY, contentWidth, 26, 5).fill(brand);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff').text(
       `Quotation ${quotation.quotationNumber || '—'}`,
-      left + 12,
-      bannerY + 9,
+      left + 10,
+      bannerY + 7,
       { width: contentWidth * 0.55 }
     );
-    doc.font('Helvetica').fontSize(9).fillColor('rgba(255,255,255,0.92)').text(
+    doc.font('Helvetica').fontSize(8.5).fillColor('rgba(255,255,255,0.92)').text(
       `Valid until ${formatPdfDate(quotation.validUntil)}`,
       left + contentWidth * 0.55,
-      bannerY + 10,
-      { width: contentWidth * 0.45 - 12, align: 'right' }
+      bannerY + 8,
+      { width: contentWidth * 0.45 - 10, align: 'right' }
     );
-    doc.y = bannerY + 40;
+    doc.y = bannerY + 34;
 
     // ── Client / Event panels ────────────────────────────────
-    ensureSpace(118);
+    ensureSpace(100);
     const panelsTop = doc.y;
     const panelW = (contentWidth - gap) / 2;
-    const panelH = 112;
+    const panelH = 98;
     drawPanel(left, panelsTop, panelW, panelH);
     drawPanel(left + panelW + gap, panelsTop, panelW, panelH);
 
-    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text('Client', left + 12, panelsTop + 10);
-    kv(left + 12, panelsTop + 26, 'Name', quotation.clientName, panelW - 24);
-    kv(left + 12, panelsTop + 52, 'Email', quotation.clientEmail, panelW - 24);
-    kv(left + 12, panelsTop + 78, 'Phone', quotation.clientPhone, panelW - 24);
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brand).text('Client', left + 10, panelsTop + 8);
+    kv(left + 10, panelsTop + 22, 'Name', quotation.clientName, panelW - 20);
+    kv(left + 10, panelsTop + 44, 'Email', quotation.clientEmail, panelW - 20);
+    kv(left + 10, panelsTop + 66, 'Phone', quotation.clientPhone, panelW - 20);
 
-    const eventX = left + panelW + gap + 12;
-    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text('Event', eventX, panelsTop + 10);
-    kv(eventX, panelsTop + 26, 'Type', quotation.eventType || quotation.eventTitle, panelW - 24);
-    kv(eventX, panelsTop + 52, 'Date', formatPdfDate(quotation.eventDate), (panelW - 28) / 2);
+    const eventX = left + panelW + gap + 10;
+    doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brand).text('Event', eventX, panelsTop + 8);
+    kv(eventX, panelsTop + 22, 'Type', quotation.eventType || quotation.eventTitle, panelW - 20);
+    kv(eventX, panelsTop + 44, 'Date', formatPdfDate(quotation.eventDate), (panelW - 24) / 2);
     kv(
-      eventX + (panelW - 24) * 0.52,
-      panelsTop + 52,
+      eventX + (panelW - 20) * 0.52,
+      panelsTop + 44,
       'Guests',
       quotation.guestCount != null && quotation.guestCount !== '' ? String(quotation.guestCount) : '—',
-      (panelW - 24) * 0.48
+      (panelW - 20) * 0.48
     );
-    kv(eventX, panelsTop + 78, 'Venue', quotation.venue, panelW - 24);
-    doc.y = panelsTop + panelH + 12;
+    kv(eventX, panelsTop + 66, 'Venue', quotation.venue, panelW - 20);
+    doc.y = panelsTop + panelH + 10;
 
     // ── Line items ──────────────────────────────────────────
     sectionTitle('Line items');
     const items = Array.isArray(quotation.lineItems) ? quotation.lineItems : [];
-    const colDesc = left + 8;
+    const colDesc = left + 6;
     const colQty = left + contentWidth * 0.54;
     const colUnit = left + contentWidth * 0.64;
     const colAmt = left + contentWidth * 0.78;
-    const amtW = right - colAmt - 8;
-    const unitW = colAmt - colUnit - 6;
-    const descW = colQty - colDesc - 6;
+    const amtW = right - colAmt - 6;
+    const unitW = colAmt - colUnit - 5;
+    const descW = colQty - colDesc - 5;
 
-    ensureSpace(22);
+    ensureSpace(20);
     const headY = doc.y;
-    doc.roundedRect(left, headY, contentWidth, 22, 4).fill(brandSoft);
-    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(brand);
-    doc.text('Description', colDesc, headY + 6, { width: descW });
-    doc.text('Qty', colQty, headY + 6, { width: 36, align: 'right' });
-    doc.text('Unit price', colUnit, headY + 6, { width: unitW, align: 'right' });
-    doc.text('Amount', colAmt, headY + 6, { width: amtW, align: 'right' });
-    doc.y = headY + 24;
+    doc.roundedRect(left, headY, contentWidth, 18, 4).fill(brandSoft);
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(brand);
+    doc.text('Description', colDesc, headY + 5, { width: descW });
+    doc.text('Qty', colQty, headY + 5, { width: 36, align: 'right' });
+    doc.text('Unit price', colUnit, headY + 5, { width: unitW, align: 'right' });
+    doc.text('Amount', colAmt, headY + 5, { width: amtW, align: 'right' });
+    doc.y = headY + 20;
 
     if (!items.length) {
-      ensureSpace(22);
-      doc.font('Helvetica').fontSize(9).fillColor(muted).text('No line items', left + 8, doc.y + 4);
-      doc.y += 22;
+      ensureSpace(18);
+      doc.font('Helvetica').fontSize(9).fillColor(muted).text('No line items', left + 6, doc.y + 3);
+      doc.y += 18;
     } else {
       items.forEach((item, idx) => {
         const desc = String(item.description || 'Item');
@@ -279,53 +298,53 @@ function buildQuotationPdfBuffer(quotation) {
         const unit = Number(item.unitPrice) || 0;
         const total = Number(item.total != null ? item.total : qty * unit) || 0;
         const descHeight = Math.max(
-          12,
-          doc.heightOfString(desc, { width: descW, font: 'Helvetica', fontSize: 9.5 })
+          11,
+          doc.heightOfString(desc, { width: descW, font: 'Helvetica', fontSize: 9 })
         );
-        const rowH = Math.max(22, descHeight + 8);
+        const rowH = Math.max(18, descHeight + 6);
         ensureSpace(rowH + 2);
         const rowY = doc.y;
         if (idx % 2 === 1) {
           doc.rect(left, rowY, contentWidth, rowH).fill('#fafaf8');
         }
-        doc.font('Helvetica').fontSize(9.5).fillColor(ink).text(desc, colDesc, rowY + 5, { width: descW });
-        doc.text(String(qty), colQty, rowY + 5, { width: 36, align: 'right' });
-        doc.text(formatMoney(unit), colUnit, rowY + 5, { width: unitW, align: 'right' });
-        doc.font('Helvetica-Bold').text(formatMoney(total), colAmt, rowY + 5, { width: amtW, align: 'right' });
-        doc.strokeColor(line).lineWidth(0.6).moveTo(left, rowY + rowH).lineTo(right, rowY + rowH).stroke();
+        doc.font('Helvetica').fontSize(9).fillColor(ink).text(desc, colDesc, rowY + 4, { width: descW });
+        doc.text(String(qty), colQty, rowY + 4, { width: 36, align: 'right' });
+        doc.text(formatMoney(unit), colUnit, rowY + 4, { width: unitW, align: 'right' });
+        doc.font('Helvetica-Bold').text(formatMoney(total), colAmt, rowY + 4, { width: amtW, align: 'right' });
+        doc.strokeColor(line).lineWidth(0.5).moveTo(left, rowY + rowH).lineTo(right, rowY + rowH).stroke();
         doc.y = rowY + rowH;
       });
     }
 
-    doc.y += 8;
+    doc.y += 6;
 
     // ── Totals ──────────────────────────────────────────────
     const hasTax = Number(quotation.tax) > 0;
-    const totalsH = hasTax ? 68 : 52;
-    ensureSpace(totalsH + 8);
-    const totalsW = Math.min(220, contentWidth * 0.42);
+    const totalsH = hasTax ? 58 : 44;
+    ensureSpace(totalsH + 6);
+    const totalsW = Math.min(200, contentWidth * 0.4);
     const totalsX = right - totalsW;
     const totalsTop = doc.y;
     drawPanel(totalsX, totalsTop, totalsW, totalsH);
-    doc.font('Helvetica').fontSize(9).fillColor(muted).text('Subtotal', totalsX + 12, totalsTop + 12);
-    doc.font('Helvetica').fontSize(9).fillColor(ink).text(formatMoney(quotation.subtotal), totalsX + 12, totalsTop + 12, {
-      width: totalsW - 24,
+    doc.font('Helvetica').fontSize(8.5).fillColor(muted).text('Subtotal', totalsX + 10, totalsTop + 10);
+    doc.font('Helvetica').fontSize(8.5).fillColor(ink).text(formatMoney(quotation.subtotal), totalsX + 10, totalsTop + 10, {
+      width: totalsW - 20,
       align: 'right',
     });
     if (hasTax) {
-      doc.font('Helvetica').fontSize(9).fillColor(muted).text('Other charges', totalsX + 12, totalsTop + 28);
-      doc.font('Helvetica').fontSize(9).fillColor(ink).text(formatMoney(quotation.tax), totalsX + 12, totalsTop + 28, {
-        width: totalsW - 24,
+      doc.font('Helvetica').fontSize(8.5).fillColor(muted).text('Other charges', totalsX + 10, totalsTop + 24);
+      doc.font('Helvetica').fontSize(8.5).fillColor(ink).text(formatMoney(quotation.tax), totalsX + 10, totalsTop + 24, {
+        width: totalsW - 20,
         align: 'right',
       });
     }
-    const totalY = hasTax ? totalsTop + 46 : totalsTop + 30;
-    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Total', totalsX + 12, totalY);
-    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text(formatMoney(quotation.total), totalsX + 12, totalY, {
-      width: totalsW - 24,
+    const totalY = hasTax ? totalsTop + 40 : totalsTop + 26;
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text('Total', totalsX + 10, totalY);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text(formatMoney(quotation.total), totalsX + 10, totalY, {
+      width: totalsW - 20,
       align: 'right',
     });
-    doc.y = totalsTop + totalsH + 12;
+    doc.y = totalsTop + totalsH + 10;
 
     // ── Notes & terms ───────────────────────────────────────
     const notes = String(quotation.notes || '').trim();
@@ -333,30 +352,29 @@ function buildQuotationPdfBuffer(quotation) {
     if (notes || terms) {
       sectionTitle('Notes & terms');
       if (notes) {
-        ensureSpace(36);
-        doc.font('Helvetica-Bold').fontSize(9).fillColor(ink).text('Notes', left, doc.y);
-        doc.moveDown(0.2);
-        doc.font('Helvetica').fontSize(9).fillColor(ink).text(notes, left, doc.y, { width: contentWidth, lineGap: 1.5 });
-        doc.moveDown(0.45);
+        ensureSpace(30);
+        doc.font('Helvetica-Bold').fontSize(8.5).fillColor(ink).text('Notes', left, doc.y);
+        doc.moveDown(0.15);
+        doc.font('Helvetica').fontSize(8.5).fillColor(ink).text(notes, left, doc.y, { width: contentWidth, lineGap: 1 });
+        doc.moveDown(0.35);
       }
       if (terms) {
-        ensureSpace(36);
-        doc.font('Helvetica-Bold').fontSize(9).fillColor(ink).text('Terms', left, doc.y);
-        doc.moveDown(0.2);
-        doc.font('Helvetica').fontSize(9).fillColor(ink).text(terms, left, doc.y, { width: contentWidth, lineGap: 1.5 });
-        doc.moveDown(0.35);
+        ensureSpace(30);
+        doc.font('Helvetica-Bold').fontSize(8.5).fillColor(ink).text('Terms', left, doc.y);
+        doc.moveDown(0.15);
+        doc.font('Helvetica').fontSize(8.5).fillColor(ink).text(terms, left, doc.y, { width: contentWidth, lineGap: 1 });
+        doc.moveDown(0.25);
       }
     }
 
-    // Footer — sit under content (not pinned to page bottom)
-    ensureSpace(28);
-    doc.y += 6;
-    const footY = doc.y;
-    doc.strokeColor(line).lineWidth(0.8).moveTo(left, footY).lineTo(right, footY).stroke();
-    doc.font('Helvetica').fontSize(8).fillColor(muted).text(
+    // Footer directly under content — never pinned to page bottom
+    ensureSpace(22);
+    const footY = doc.y + 4;
+    doc.strokeColor(line).lineWidth(0.7).moveTo(left, footY).lineTo(right, footY).stroke();
+    doc.font('Helvetica').fontSize(7.5).fillColor(muted).text(
       `ValleyCroft Farm · Quotation ${quotation.quotationNumber || ''} · Prepared ${formatPdfDate(quotation.createdAt || new Date())}`,
       left,
-      footY + 6,
+      footY + 5,
       { width: contentWidth, align: 'center' }
     );
 
