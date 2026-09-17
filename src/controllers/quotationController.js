@@ -69,6 +69,18 @@ function pickQuotationPayload(body = {}) {
     });
   }
 
+  // Coerce date strings from the admin form
+  for (const key of ['eventDate', 'validUntil']) {
+    if (normalized[key] !== undefined && normalized[key] !== null && normalized[key] !== '') {
+      const d = new Date(normalized[key]);
+      if (!Number.isNaN(d.getTime())) normalized[key] = d;
+    }
+  }
+
+  if (normalized.venue !== undefined) {
+    normalized.venue = String(normalized.venue || '').trim();
+  }
+
   const out = {};
   for (const key of QUOTATION_UPDATE_FIELDS) {
     if (normalized[key] !== undefined) out[key] = normalized[key];
@@ -76,13 +88,25 @@ function pickQuotationPayload(body = {}) {
   return out;
 }
 
-function formatMoney(n, currency = 'ZAR') {
+function formatMoney(n) {
   const v = Number(n) || 0;
   const localized = new Intl.NumberFormat('en-ZA', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(v);
-  return `${currency} ${localized}`;
+  return `R ${localized}`;
+}
+
+function formatPdfDate(value) {
+  if (!value) return '—';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-ZA', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Africa/Johannesburg',
+  });
 }
 
 function getMailFrom() {
@@ -96,204 +120,241 @@ function mailConfigured() {
 
 function buildQuotationPdfBuffer(quotation) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50 });
+    const doc = new PDFDocument({
+      size: 'A4',
+      margin: 48,
+      info: {
+        Title: `Quotation ${quotation.quotationNumber || ''}`.trim(),
+        Author: 'ValleyCroft Farm',
+      },
+    });
     const chunks = [];
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-    const itemLines =
-      Array.isArray(quotation.lineItems) && quotation.lineItems.length
-        ? quotation.lineItems
-            .map(
-              (item, idx) =>
-                `${idx + 1}. **${item.description || 'Item'}** — qty ${Number(item.qty) || 0}, unit ${formatMoney(
-                  item.unitPrice,
-                  quotation.currency
-                )}, total ${formatMoney(item.total, quotation.currency)}`
-            )
-            .join('\n')
-        : '- No line items';
 
     const left = doc.page.margins.left;
-    const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    const right = left + contentWidth;
+    const right = doc.page.width - doc.page.margins.right;
+    const contentWidth = right - left;
+    const brand = '#1e3d2f';
+    const brandSoft = '#e8f0ea';
+    const ink = '#1f2937';
+    const muted = '#6b7280';
+    const line = '#e5e7eb';
+    const gap = 14;
 
-    function ensureSpace(minHeight = 24) {
+    function ensureSpace(minHeight = 28) {
       if (doc.y + minHeight > doc.page.height - doc.page.margins.bottom) {
         doc.addPage();
       }
     }
 
-    function h2(title) {
-      ensureSpace(22);
-      doc.font('Helvetica-Bold').fontSize(16).fillColor('#111827').text(title, left, doc.y, { width: contentWidth });
-      doc.moveDown(0.3);
-      doc.strokeColor('#e5e7eb').lineWidth(1).moveTo(left, doc.y).lineTo(right, doc.y).stroke();
-      doc.moveDown(0.6);
+    function sectionTitle(title) {
+      ensureSpace(34);
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text(String(title).toUpperCase(), left, doc.y, {
+        width: contentWidth,
+        characterSpacing: 0.6,
+      });
+      doc.moveDown(0.25);
+      const y = doc.y;
+      doc.strokeColor(brand).lineWidth(1.5).moveTo(left, y).lineTo(left + 42, y).stroke();
+      doc.strokeColor(line).lineWidth(1).moveTo(left + 48, y).lineTo(right, y).stroke();
+      doc.y = y + 12;
     }
 
-    function bullet(label, value) {
-      ensureSpace(16);
-      doc.font('Helvetica').fontSize(11).fillColor('#111827').text('•', left, doc.y, { continued: true });
-      doc.text(`  ${label}: `, { continued: true });
-      doc.font('Helvetica-Bold').text(String(value || '—'));
+    function drawPanel(x, y, w, h) {
+      doc.save();
+      doc.roundedRect(x, y, w, h, 10).fillAndStroke('#ffffff', line);
+      doc.restore();
     }
 
-    const brandGreen = '#1f5f1f';
-
-    function drawCard(x, y, w, h) {
-      doc.roundedRect(x, y, w, h, 8).fillAndStroke('#ffffff', '#e5e7eb');
+    function kv(x, y, label, value, width) {
+      doc.font('Helvetica').fontSize(8.5).fillColor(muted).text(String(label).toUpperCase(), x, y, {
+        width,
+        characterSpacing: 0.4,
+      });
+      doc.font('Helvetica-Bold').fontSize(11).fillColor(ink).text(String(value || '—'), x, y + 12, {
+        width,
+      });
     }
 
-    function labelValue(x, y, label, value) {
-      doc.font('Helvetica-Bold').fontSize(10).fillColor('#111827').text(`${label}:`, x, y, { continued: true });
-      doc.font('Helvetica').text(` ${value || '—'}`);
-    }
-
-    // Brand header with logo when available
+    // ── Header ──────────────────────────────────────────────
     const logoFile = resolveMailLogoFile();
     const headerTop = doc.y;
+    let headerBottom = headerTop + 64;
+
     if (logoFile) {
       try {
-        const logoW = 110;
-        const logoH = 110;
-        doc.image(logoFile, left, headerTop, { fit: [logoW, logoH], align: 'center', valign: 'center' });
-        doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left + logoW + 16, headerTop + 28, {
-          width: contentWidth - logoW - 16,
-        });
-        doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text(
-          'Agro-Tourism Event Quotation',
-          left + logoW + 16,
-          headerTop + 62,
-          { width: contentWidth - logoW - 16 }
-        );
-        doc.y = Math.max(doc.y, headerTop + logoH + 12);
+        doc.image(logoFile, left, headerTop, { fit: [78, 78], align: 'center', valign: 'center' });
+        headerBottom = Math.max(headerBottom, headerTop + 78);
       } catch (err) {
         console.warn('[quotation pdf] logo embed failed:', err?.message || err);
-        doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, headerTop, { width: contentWidth });
-        doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
-          width: contentWidth,
-        });
+      }
+    }
+
+    const textX = logoFile ? left + 96 : left;
+    const textW = logoFile ? contentWidth - 96 : contentWidth;
+    doc.font('Helvetica-Bold').fontSize(24).fillColor(brand).text('ValleyCroft', textX, headerTop + 8, { width: textW });
+    doc.font('Helvetica').fontSize(11).fillColor(muted).text('Agro-Tourism Event Quotation', textX, headerTop + 38, {
+      width: textW,
+    });
+    doc.y = headerBottom + 16;
+
+    // Quote number banner
+    ensureSpace(44);
+    const bannerY = doc.y;
+    doc.roundedRect(left, bannerY, contentWidth, 40, 8).fill(brand);
+    doc.font('Helvetica-Bold').fontSize(12).fillColor('#ffffff').text(
+      `Quotation ${quotation.quotationNumber || '—'}`,
+      left + 16,
+      bannerY + 13,
+      { width: contentWidth * 0.55 }
+    );
+    doc.font('Helvetica').fontSize(10).fillColor('rgba(255,255,255,0.92)').text(
+      `Valid until ${formatPdfDate(quotation.validUntil)}`,
+      left + contentWidth * 0.55,
+      bannerY + 14,
+      { width: contentWidth * 0.45 - 16, align: 'right' }
+    );
+    doc.y = bannerY + 54;
+
+    // ── Client / Event panels ────────────────────────────────
+    ensureSpace(168);
+    const panelsTop = doc.y;
+    const panelW = (contentWidth - gap) / 2;
+    const panelH = 152;
+    drawPanel(left, panelsTop, panelW, panelH);
+    drawPanel(left + panelW + gap, panelsTop, panelW, panelH);
+
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Client', left + 16, panelsTop + 14);
+    kv(left + 16, panelsTop + 36, 'Name', quotation.clientName, panelW - 32);
+    kv(left + 16, panelsTop + 72, 'Email', quotation.clientEmail, panelW - 32);
+    kv(left + 16, panelsTop + 108, 'Phone', quotation.clientPhone, panelW - 32);
+
+    const eventX = left + panelW + gap + 16;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Event', eventX, panelsTop + 14);
+    kv(eventX, panelsTop + 34, 'Type', quotation.eventType || quotation.eventTitle, panelW - 32);
+    kv(eventX, panelsTop + 66, 'Date', formatPdfDate(quotation.eventDate), (panelW - 40) / 2);
+    kv(
+      eventX + (panelW - 32) * 0.52,
+      panelsTop + 66,
+      'Guests',
+      quotation.guestCount != null && quotation.guestCount !== '' ? String(quotation.guestCount) : '—',
+      (panelW - 32) * 0.48
+    );
+    kv(eventX, panelsTop + 102, 'Venue', quotation.venue, panelW - 32);
+    doc.y = panelsTop + panelH + 20;
+
+    // ── Line items ──────────────────────────────────────────
+    sectionTitle('Line items');
+    const items = Array.isArray(quotation.lineItems) ? quotation.lineItems : [];
+    const colDesc = left + 10;
+    const colQty = left + contentWidth * 0.54;
+    const colUnit = left + contentWidth * 0.64;
+    const colAmt = left + contentWidth * 0.78;
+    const amtW = right - colAmt - 10;
+    const unitW = colAmt - colUnit - 8;
+    const descW = colQty - colDesc - 8;
+
+    ensureSpace(28);
+    const headY = doc.y;
+    doc.roundedRect(left, headY, contentWidth, 26, 6).fill(brandSoft);
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(brand);
+    doc.text('Description', colDesc, headY + 8, { width: descW });
+    doc.text('Qty', colQty, headY + 8, { width: 36, align: 'right' });
+    doc.text('Unit price', colUnit, headY + 8, { width: unitW, align: 'right' });
+    doc.text('Amount', colAmt, headY + 8, { width: amtW, align: 'right' });
+    doc.y = headY + 30;
+
+    if (!items.length) {
+      ensureSpace(28);
+      doc.font('Helvetica').fontSize(10).fillColor(muted).text('No line items', left + 10, doc.y + 6);
+      doc.y += 28;
+    } else {
+      items.forEach((item, idx) => {
+        const desc = String(item.description || 'Item');
+        const qty = Number(item.qty) || 0;
+        const unit = Number(item.unitPrice) || 0;
+        const total = Number(item.total != null ? item.total : qty * unit) || 0;
+        const descHeight = Math.max(
+          18,
+          doc.heightOfString(desc, { width: descW, font: 'Helvetica', fontSize: 10 })
+        );
+        const rowH = Math.max(28, descHeight + 12);
+        ensureSpace(rowH + 4);
+        const rowY = doc.y;
+        if (idx % 2 === 1) {
+          doc.rect(left, rowY, contentWidth, rowH).fill('#fafaf8');
+        }
+        doc.font('Helvetica').fontSize(10).fillColor(ink).text(desc, colDesc, rowY + 8, { width: descW });
+        doc.text(String(qty), colQty, rowY + 8, { width: 36, align: 'right' });
+        doc.text(formatMoney(unit), colUnit, rowY + 8, { width: unitW, align: 'right' });
+        doc.font('Helvetica-Bold').text(formatMoney(total), colAmt, rowY + 8, { width: amtW, align: 'right' });
+        doc.strokeColor(line).lineWidth(0.8).moveTo(left, rowY + rowH).lineTo(right, rowY + rowH).stroke();
+        doc.y = rowY + rowH;
+      });
+    }
+
+    doc.moveDown(0.7);
+
+    // ── Totals ──────────────────────────────────────────────
+    ensureSpace(96);
+    const totalsW = Math.min(250, contentWidth * 0.48);
+    const totalsX = right - totalsW;
+    const totalsTop = doc.y;
+    drawPanel(totalsX, totalsTop, totalsW, 88);
+    doc.font('Helvetica').fontSize(10).fillColor(muted).text('Subtotal', totalsX + 14, totalsTop + 14);
+    doc.font('Helvetica').fontSize(10).fillColor(ink).text(formatMoney(quotation.subtotal), totalsX + 14, totalsTop + 14, {
+      width: totalsW - 28,
+      align: 'right',
+    });
+    if (Number(quotation.tax) > 0) {
+      doc.font('Helvetica').fontSize(10).fillColor(muted).text('Other charges', totalsX + 14, totalsTop + 34);
+      doc.font('Helvetica').fontSize(10).fillColor(ink).text(formatMoney(quotation.tax), totalsX + 14, totalsTop + 34, {
+        width: totalsW - 28,
+        align: 'right',
+      });
+    }
+    doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text('Total', totalsX + 14, totalsTop + 56);
+    doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text(formatMoney(quotation.total), totalsX + 14, totalsTop + 56, {
+      width: totalsW - 28,
+      align: 'right',
+    });
+    doc.y = totalsTop + 100;
+
+    // ── Notes & terms ───────────────────────────────────────
+    const notes = String(quotation.notes || '').trim();
+    const terms = String(quotation.terms || '').trim();
+    if (notes || terms) {
+      sectionTitle('Notes & terms');
+      if (notes) {
+        ensureSpace(48);
+        doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text('Notes', left, doc.y);
+        doc.moveDown(0.3);
+        doc.font('Helvetica').fontSize(10).fillColor(ink).text(notes, left, doc.y, { width: contentWidth, lineGap: 2 });
         doc.moveDown(0.8);
       }
-    } else {
-      doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, headerTop, { width: contentWidth });
-      doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
-        width: contentWidth,
-      });
-      doc.moveDown(0.8);
+      if (terms) {
+        ensureSpace(48);
+        doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text('Terms', left, doc.y);
+        doc.moveDown(0.3);
+        doc.font('Helvetica').fontSize(10).fillColor(ink).text(terms, left, doc.y, { width: contentWidth, lineGap: 2 });
+        doc.moveDown(0.6);
+      }
     }
 
-    // Green quotation pill
-    ensureSpace(38);
-    const pillY = doc.y;
-    doc.roundedRect(left, pillY, contentWidth, 34, 8).fill(brandGreen);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(13).text(
-      `Quotation: ${quotation.quotationNumber || '—'}`,
-      left + 12,
-      pillY + 10,
-      { width: contentWidth - 24 }
-    );
-    doc.fillColor('black');
-    doc.y = pillY + 48;
-
-    // Two detail cards
-    ensureSpace(190);
-    const cardsTop = doc.y;
-    const gap = 12;
-    const cardW = (contentWidth - gap) / 2;
-    const cardH = 168;
-
-    drawCard(left, cardsTop, cardW, cardH);
-    drawCard(left + cardW + gap, cardsTop, cardW, cardH);
-
-    doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Client Details', left + 12, cardsTop + 12);
-    labelValue(left + 12, cardsTop + 40, 'Client', quotation.clientName || '—');
-    labelValue(left + 12, cardsTop + 62, 'Email', quotation.clientEmail || '—');
-    labelValue(left + 12, cardsTop + 84, 'Phone', quotation.clientPhone || '—');
-
-    doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Event Details', left + cardW + gap + 12, cardsTop + 12);
-    labelValue(left + cardW + gap + 12, cardsTop + 40, 'Event', quotation.eventType || '—');
-    labelValue(
-      left + cardW + gap + 12,
-      cardsTop + 62,
-      'Date',
-      quotation.eventDate ? new Date(quotation.eventDate).toISOString().slice(0, 10) : '—'
-    );
-    labelValue(left + cardW + gap + 12, cardsTop + 84, 'Venue', quotation.venue || '—');
-    labelValue(left + cardW + gap + 12, cardsTop + 106, 'Guests', Number(quotation.guestCount) || '—');
-    labelValue(left + cardW + gap + 12, cardsTop + 128, 'Quoted on', new Date(quotation.createdAt || Date.now()).toISOString().slice(0, 10));
-    labelValue(
-      left + cardW + gap + 12,
-      cardsTop + 150,
-      'Valid until',
-      quotation.validUntil ? new Date(quotation.validUntil).toISOString().slice(0, 10) : '—'
-    );
-    doc.y = cardsTop + cardH + 18;
-
-    h2('Line Items');
-    ensureSpace(30);
-    const headerY = doc.y;
-    const colDesc = left + 6;
-    const colQty = left + contentWidth * 0.52;
-    const colUnit = left + contentWidth * 0.62;
-    const colAmt = left + contentWidth * 0.8;
-    const amtWidth = right - colAmt - 6;
-
-    doc.rect(left, headerY, contentWidth, 24).fill('#f3f4f6');
-    doc.fillColor('#111827').font('Helvetica-Bold').fontSize(11);
-    doc.text('Description', colDesc, headerY + 7);
-    doc.text('Qty', colQty, headerY + 7);
-    doc.text('Unit Price', colUnit, headerY + 7);
-    doc.text('Amount', colAmt, headerY + 7, { width: amtWidth, align: 'right' });
-    doc.y = headerY + 24;
-
-    const items = Array.isArray(quotation.lineItems) ? quotation.lineItems : [];
-    if (!items.length) {
-      doc.font('Helvetica').fontSize(10).fillColor('#111827').text('No line items', left + 6, doc.y + 7);
-      doc.y += 22;
-    } else {
-      items.forEach((item) => {
-        ensureSpace(24);
-        const rowY = doc.y;
-        doc.strokeColor('#e5e7eb').lineWidth(1).moveTo(left, rowY).lineTo(right, rowY).stroke();
-        doc.font('Helvetica').fontSize(10).fillColor('#111827');
-        doc.text(item.description || 'Item', colDesc, rowY + 7, { width: contentWidth * 0.5 });
-        doc.text(String(Number(item.qty) || 0), colQty, rowY + 7);
-        doc.text(formatMoney(item.unitPrice, quotation.currency), colUnit, rowY + 7, {
-          width: colAmt - colUnit - 8,
-          align: 'right',
-        });
-        doc.text(formatMoney(item.total, quotation.currency), colAmt, rowY + 7, {
-          width: amtWidth,
-          align: 'right',
-        });
-        doc.y = rowY + 24;
-      });
-      doc.strokeColor('#e5e7eb').lineWidth(1).moveTo(left, doc.y).lineTo(right, doc.y).stroke();
-    }
+    // Footer
+    ensureSpace(36);
     doc.moveDown(0.8);
+    const footY = Math.max(doc.y, doc.page.height - doc.page.margins.bottom - 28);
+    doc.strokeColor(line).lineWidth(1).moveTo(left, footY).lineTo(right, footY).stroke();
+    doc.font('Helvetica').fontSize(8.5).fillColor(muted).text(
+      `ValleyCroft Farm · Quotation ${quotation.quotationNumber || ''} · Prepared ${formatPdfDate(quotation.createdAt || new Date())}`,
+      left,
+      footY + 8,
+      { width: contentWidth, align: 'center' }
+    );
 
-    h2('Totals');
-    bullet('Subtotal', formatMoney(quotation.subtotal, quotation.currency));
-    bullet('Other charges', formatMoney(quotation.tax, quotation.currency));
-    bullet('Total', formatMoney(quotation.total, quotation.currency));
-    doc.moveDown(0.4);
-
-    // Notes + Terms cards side-by-side
-    ensureSpace(150);
-    const bottomTop = doc.y;
-    drawCard(left, bottomTop, cardW, 126);
-    drawCard(left + cardW + gap, bottomTop, cardW, 126);
-    doc.font('Helvetica-Bold').fontSize(13).fillColor('#111827').text('Notes', left + 12, bottomTop + 10);
-    doc.font('Helvetica').fontSize(10).fillColor('#111827').text(quotation.notes || '—', left + 12, bottomTop + 34, {
-      width: cardW - 24,
-    });
-    doc.font('Helvetica-Bold').fontSize(13).fillColor('#111827').text('Terms', left + cardW + gap + 12, bottomTop + 10);
-    doc.font('Helvetica').fontSize(10).fillColor('#111827').text(quotation.terms || '—', left + cardW + gap + 12, bottomTop + 34, {
-      width: cardW - 24,
-    });
-    doc.y = bottomTop + 136;
     doc.end();
   });
 }
