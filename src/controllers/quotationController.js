@@ -178,7 +178,7 @@ function buildQuotationPdfBuffer(quotation) {
       });
     }
 
-    // ── Header (centered logo only) ─────────────────────────
+    // ── Header (centered logo + subtitle) ───────────────────
     const logoFile = resolveMailLogoFile();
     const headerTop = doc.y;
     const logoSize = 140;
@@ -193,7 +193,14 @@ function buildQuotationPdfBuffer(quotation) {
         console.warn('[quotation pdf] logo embed failed:', err?.message || err);
       }
     }
-    doc.y = headerBottom + 18;
+
+    doc.font('Helvetica').fontSize(11).fillColor(muted).text(
+      'Agro-Tourism Event Quotation',
+      left,
+      headerBottom + 10,
+      { width: contentWidth, align: 'center' }
+    );
+    doc.y = headerBottom + 32;
 
     // Quote number banner
     ensureSpace(44);
