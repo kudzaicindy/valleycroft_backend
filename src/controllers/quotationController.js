@@ -122,7 +122,7 @@ function buildQuotationPdfBuffer(quotation) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
-      margin: 48,
+      margin: 36,
       info: {
         Title: `Quotation ${quotation.quotationNumber || ''}`.trim(),
         Author: 'ValleyCroft Farm',
@@ -141,39 +141,39 @@ function buildQuotationPdfBuffer(quotation) {
     const ink = '#1f2937';
     const muted = '#6b7280';
     const line = '#e5e7eb';
-    const gap = 14;
+    const gap = 10;
 
-    function ensureSpace(minHeight = 28) {
+    function ensureSpace(minHeight = 24) {
       if (doc.y + minHeight > doc.page.height - doc.page.margins.bottom) {
         doc.addPage();
       }
     }
 
     function sectionTitle(title) {
-      ensureSpace(34);
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text(String(title).toUpperCase(), left, doc.y, {
+      ensureSpace(26);
+      const titleY = doc.y;
+      doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text(String(title).toUpperCase(), left, titleY, {
         width: contentWidth,
-        characterSpacing: 0.6,
+        characterSpacing: 0.5,
       });
-      doc.moveDown(0.25);
-      const y = doc.y;
-      doc.strokeColor(brand).lineWidth(1.5).moveTo(left, y).lineTo(left + 42, y).stroke();
-      doc.strokeColor(line).lineWidth(1).moveTo(left + 48, y).lineTo(right, y).stroke();
-      doc.y = y + 12;
+      const y = titleY + 14;
+      doc.strokeColor(brand).lineWidth(1.25).moveTo(left, y).lineTo(left + 36, y).stroke();
+      doc.strokeColor(line).lineWidth(0.8).moveTo(left + 42, y).lineTo(right, y).stroke();
+      doc.y = y + 8;
     }
 
     function drawPanel(x, y, w, h) {
       doc.save();
-      doc.roundedRect(x, y, w, h, 10).fillAndStroke('#ffffff', line);
+      doc.roundedRect(x, y, w, h, 8).fillAndStroke('#ffffff', line);
       doc.restore();
     }
 
     function kv(x, y, label, value, width) {
-      doc.font('Helvetica').fontSize(8.5).fillColor(muted).text(String(label).toUpperCase(), x, y, {
+      doc.font('Helvetica').fontSize(7.5).fillColor(muted).text(String(label).toUpperCase(), x, y, {
         width,
-        characterSpacing: 0.4,
+        characterSpacing: 0.3,
       });
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(ink).text(String(value || '—'), x, y + 12, {
+      doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text(String(value || '—'), x, y + 10, {
         width,
       });
     }
@@ -181,7 +181,7 @@ function buildQuotationPdfBuffer(quotation) {
     // ── Header (centered logo + subtitle) ───────────────────
     const logoFile = resolveMailLogoFile();
     const headerTop = doc.y;
-    const logoSize = 140;
+    const logoSize = 96;
     let headerBottom = headerTop;
 
     if (logoFile) {
@@ -194,84 +194,84 @@ function buildQuotationPdfBuffer(quotation) {
       }
     }
 
-    doc.font('Helvetica').fontSize(11).fillColor(muted).text(
+    doc.font('Helvetica').fontSize(10).fillColor(muted).text(
       'Agro-Tourism Event Quotation',
       left,
-      headerBottom + 10,
+      headerBottom + 4,
       { width: contentWidth, align: 'center' }
     );
-    doc.y = headerBottom + 32;
+    doc.y = headerBottom + 20;
 
     // Quote number banner
-    ensureSpace(44);
+    ensureSpace(34);
     const bannerY = doc.y;
-    doc.roundedRect(left, bannerY, contentWidth, 40, 8).fill(brand);
-    doc.font('Helvetica-Bold').fontSize(12).fillColor('#ffffff').text(
+    doc.roundedRect(left, bannerY, contentWidth, 30, 6).fill(brand);
+    doc.font('Helvetica-Bold').fontSize(11).fillColor('#ffffff').text(
       `Quotation ${quotation.quotationNumber || '—'}`,
-      left + 16,
-      bannerY + 13,
+      left + 12,
+      bannerY + 9,
       { width: contentWidth * 0.55 }
     );
-    doc.font('Helvetica').fontSize(10).fillColor('rgba(255,255,255,0.92)').text(
+    doc.font('Helvetica').fontSize(9).fillColor('rgba(255,255,255,0.92)').text(
       `Valid until ${formatPdfDate(quotation.validUntil)}`,
       left + contentWidth * 0.55,
-      bannerY + 14,
-      { width: contentWidth * 0.45 - 16, align: 'right' }
+      bannerY + 10,
+      { width: contentWidth * 0.45 - 12, align: 'right' }
     );
-    doc.y = bannerY + 54;
+    doc.y = bannerY + 40;
 
     // ── Client / Event panels ────────────────────────────────
-    ensureSpace(168);
+    ensureSpace(118);
     const panelsTop = doc.y;
     const panelW = (contentWidth - gap) / 2;
-    const panelH = 152;
+    const panelH = 112;
     drawPanel(left, panelsTop, panelW, panelH);
     drawPanel(left + panelW + gap, panelsTop, panelW, panelH);
 
-    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Client', left + 16, panelsTop + 14);
-    kv(left + 16, panelsTop + 36, 'Name', quotation.clientName, panelW - 32);
-    kv(left + 16, panelsTop + 72, 'Email', quotation.clientEmail, panelW - 32);
-    kv(left + 16, panelsTop + 108, 'Phone', quotation.clientPhone, panelW - 32);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text('Client', left + 12, panelsTop + 10);
+    kv(left + 12, panelsTop + 26, 'Name', quotation.clientName, panelW - 24);
+    kv(left + 12, panelsTop + 52, 'Email', quotation.clientEmail, panelW - 24);
+    kv(left + 12, panelsTop + 78, 'Phone', quotation.clientPhone, panelW - 24);
 
-    const eventX = left + panelW + gap + 16;
-    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Event', eventX, panelsTop + 14);
-    kv(eventX, panelsTop + 34, 'Type', quotation.eventType || quotation.eventTitle, panelW - 32);
-    kv(eventX, panelsTop + 66, 'Date', formatPdfDate(quotation.eventDate), (panelW - 40) / 2);
+    const eventX = left + panelW + gap + 12;
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(brand).text('Event', eventX, panelsTop + 10);
+    kv(eventX, panelsTop + 26, 'Type', quotation.eventType || quotation.eventTitle, panelW - 24);
+    kv(eventX, panelsTop + 52, 'Date', formatPdfDate(quotation.eventDate), (panelW - 28) / 2);
     kv(
-      eventX + (panelW - 32) * 0.52,
-      panelsTop + 66,
+      eventX + (panelW - 24) * 0.52,
+      panelsTop + 52,
       'Guests',
       quotation.guestCount != null && quotation.guestCount !== '' ? String(quotation.guestCount) : '—',
-      (panelW - 32) * 0.48
+      (panelW - 24) * 0.48
     );
-    kv(eventX, panelsTop + 102, 'Venue', quotation.venue, panelW - 32);
-    doc.y = panelsTop + panelH + 20;
+    kv(eventX, panelsTop + 78, 'Venue', quotation.venue, panelW - 24);
+    doc.y = panelsTop + panelH + 12;
 
     // ── Line items ──────────────────────────────────────────
     sectionTitle('Line items');
     const items = Array.isArray(quotation.lineItems) ? quotation.lineItems : [];
-    const colDesc = left + 10;
+    const colDesc = left + 8;
     const colQty = left + contentWidth * 0.54;
     const colUnit = left + contentWidth * 0.64;
     const colAmt = left + contentWidth * 0.78;
-    const amtW = right - colAmt - 10;
-    const unitW = colAmt - colUnit - 8;
-    const descW = colQty - colDesc - 8;
+    const amtW = right - colAmt - 8;
+    const unitW = colAmt - colUnit - 6;
+    const descW = colQty - colDesc - 6;
 
-    ensureSpace(28);
+    ensureSpace(22);
     const headY = doc.y;
-    doc.roundedRect(left, headY, contentWidth, 26, 6).fill(brandSoft);
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(brand);
-    doc.text('Description', colDesc, headY + 8, { width: descW });
-    doc.text('Qty', colQty, headY + 8, { width: 36, align: 'right' });
-    doc.text('Unit price', colUnit, headY + 8, { width: unitW, align: 'right' });
-    doc.text('Amount', colAmt, headY + 8, { width: amtW, align: 'right' });
-    doc.y = headY + 30;
+    doc.roundedRect(left, headY, contentWidth, 22, 4).fill(brandSoft);
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(brand);
+    doc.text('Description', colDesc, headY + 6, { width: descW });
+    doc.text('Qty', colQty, headY + 6, { width: 36, align: 'right' });
+    doc.text('Unit price', colUnit, headY + 6, { width: unitW, align: 'right' });
+    doc.text('Amount', colAmt, headY + 6, { width: amtW, align: 'right' });
+    doc.y = headY + 24;
 
     if (!items.length) {
-      ensureSpace(28);
-      doc.font('Helvetica').fontSize(10).fillColor(muted).text('No line items', left + 10, doc.y + 6);
-      doc.y += 28;
+      ensureSpace(22);
+      doc.font('Helvetica').fontSize(9).fillColor(muted).text('No line items', left + 8, doc.y + 4);
+      doc.y += 22;
     } else {
       items.forEach((item, idx) => {
         const desc = String(item.description || 'Item');
@@ -279,50 +279,53 @@ function buildQuotationPdfBuffer(quotation) {
         const unit = Number(item.unitPrice) || 0;
         const total = Number(item.total != null ? item.total : qty * unit) || 0;
         const descHeight = Math.max(
-          18,
-          doc.heightOfString(desc, { width: descW, font: 'Helvetica', fontSize: 10 })
+          12,
+          doc.heightOfString(desc, { width: descW, font: 'Helvetica', fontSize: 9.5 })
         );
-        const rowH = Math.max(28, descHeight + 12);
-        ensureSpace(rowH + 4);
+        const rowH = Math.max(22, descHeight + 8);
+        ensureSpace(rowH + 2);
         const rowY = doc.y;
         if (idx % 2 === 1) {
           doc.rect(left, rowY, contentWidth, rowH).fill('#fafaf8');
         }
-        doc.font('Helvetica').fontSize(10).fillColor(ink).text(desc, colDesc, rowY + 8, { width: descW });
-        doc.text(String(qty), colQty, rowY + 8, { width: 36, align: 'right' });
-        doc.text(formatMoney(unit), colUnit, rowY + 8, { width: unitW, align: 'right' });
-        doc.font('Helvetica-Bold').text(formatMoney(total), colAmt, rowY + 8, { width: amtW, align: 'right' });
-        doc.strokeColor(line).lineWidth(0.8).moveTo(left, rowY + rowH).lineTo(right, rowY + rowH).stroke();
+        doc.font('Helvetica').fontSize(9.5).fillColor(ink).text(desc, colDesc, rowY + 5, { width: descW });
+        doc.text(String(qty), colQty, rowY + 5, { width: 36, align: 'right' });
+        doc.text(formatMoney(unit), colUnit, rowY + 5, { width: unitW, align: 'right' });
+        doc.font('Helvetica-Bold').text(formatMoney(total), colAmt, rowY + 5, { width: amtW, align: 'right' });
+        doc.strokeColor(line).lineWidth(0.6).moveTo(left, rowY + rowH).lineTo(right, rowY + rowH).stroke();
         doc.y = rowY + rowH;
       });
     }
 
-    doc.moveDown(0.7);
+    doc.y += 8;
 
     // ── Totals ──────────────────────────────────────────────
-    ensureSpace(96);
-    const totalsW = Math.min(250, contentWidth * 0.48);
+    const hasTax = Number(quotation.tax) > 0;
+    const totalsH = hasTax ? 68 : 52;
+    ensureSpace(totalsH + 8);
+    const totalsW = Math.min(220, contentWidth * 0.42);
     const totalsX = right - totalsW;
     const totalsTop = doc.y;
-    drawPanel(totalsX, totalsTop, totalsW, 88);
-    doc.font('Helvetica').fontSize(10).fillColor(muted).text('Subtotal', totalsX + 14, totalsTop + 14);
-    doc.font('Helvetica').fontSize(10).fillColor(ink).text(formatMoney(quotation.subtotal), totalsX + 14, totalsTop + 14, {
-      width: totalsW - 28,
+    drawPanel(totalsX, totalsTop, totalsW, totalsH);
+    doc.font('Helvetica').fontSize(9).fillColor(muted).text('Subtotal', totalsX + 12, totalsTop + 12);
+    doc.font('Helvetica').fontSize(9).fillColor(ink).text(formatMoney(quotation.subtotal), totalsX + 12, totalsTop + 12, {
+      width: totalsW - 24,
       align: 'right',
     });
-    if (Number(quotation.tax) > 0) {
-      doc.font('Helvetica').fontSize(10).fillColor(muted).text('Other charges', totalsX + 14, totalsTop + 34);
-      doc.font('Helvetica').fontSize(10).fillColor(ink).text(formatMoney(quotation.tax), totalsX + 14, totalsTop + 34, {
-        width: totalsW - 28,
+    if (hasTax) {
+      doc.font('Helvetica').fontSize(9).fillColor(muted).text('Other charges', totalsX + 12, totalsTop + 28);
+      doc.font('Helvetica').fontSize(9).fillColor(ink).text(formatMoney(quotation.tax), totalsX + 12, totalsTop + 28, {
+        width: totalsW - 24,
         align: 'right',
       });
     }
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text('Total', totalsX + 14, totalsTop + 56);
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(brand).text(formatMoney(quotation.total), totalsX + 14, totalsTop + 56, {
-      width: totalsW - 28,
+    const totalY = hasTax ? totalsTop + 46 : totalsTop + 30;
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text('Total', totalsX + 12, totalY);
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(brand).text(formatMoney(quotation.total), totalsX + 12, totalY, {
+      width: totalsW - 24,
       align: 'right',
     });
-    doc.y = totalsTop + 100;
+    doc.y = totalsTop + totalsH + 12;
 
     // ── Notes & terms ───────────────────────────────────────
     const notes = String(quotation.notes || '').trim();
@@ -330,30 +333,30 @@ function buildQuotationPdfBuffer(quotation) {
     if (notes || terms) {
       sectionTitle('Notes & terms');
       if (notes) {
-        ensureSpace(48);
-        doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text('Notes', left, doc.y);
-        doc.moveDown(0.3);
-        doc.font('Helvetica').fontSize(10).fillColor(ink).text(notes, left, doc.y, { width: contentWidth, lineGap: 2 });
-        doc.moveDown(0.8);
+        ensureSpace(36);
+        doc.font('Helvetica-Bold').fontSize(9).fillColor(ink).text('Notes', left, doc.y);
+        doc.moveDown(0.2);
+        doc.font('Helvetica').fontSize(9).fillColor(ink).text(notes, left, doc.y, { width: contentWidth, lineGap: 1.5 });
+        doc.moveDown(0.45);
       }
       if (terms) {
-        ensureSpace(48);
-        doc.font('Helvetica-Bold').fontSize(10).fillColor(ink).text('Terms', left, doc.y);
-        doc.moveDown(0.3);
-        doc.font('Helvetica').fontSize(10).fillColor(ink).text(terms, left, doc.y, { width: contentWidth, lineGap: 2 });
-        doc.moveDown(0.6);
+        ensureSpace(36);
+        doc.font('Helvetica-Bold').fontSize(9).fillColor(ink).text('Terms', left, doc.y);
+        doc.moveDown(0.2);
+        doc.font('Helvetica').fontSize(9).fillColor(ink).text(terms, left, doc.y, { width: contentWidth, lineGap: 1.5 });
+        doc.moveDown(0.35);
       }
     }
 
-    // Footer
-    ensureSpace(36);
-    doc.moveDown(0.8);
-    const footY = Math.max(doc.y, doc.page.height - doc.page.margins.bottom - 28);
-    doc.strokeColor(line).lineWidth(1).moveTo(left, footY).lineTo(right, footY).stroke();
-    doc.font('Helvetica').fontSize(8.5).fillColor(muted).text(
+    // Footer — sit under content (not pinned to page bottom)
+    ensureSpace(28);
+    doc.y += 6;
+    const footY = doc.y;
+    doc.strokeColor(line).lineWidth(0.8).moveTo(left, footY).lineTo(right, footY).stroke();
+    doc.font('Helvetica').fontSize(8).fillColor(muted).text(
       `ValleyCroft Farm · Quotation ${quotation.quotationNumber || ''} · Prepared ${formatPdfDate(quotation.createdAt || new Date())}`,
       left,
-      footY + 8,
+      footY + 6,
       { width: contentWidth, align: 'center' }
     );
 
