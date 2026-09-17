@@ -9,11 +9,18 @@ const mailTemplates = require('../services/mailTemplates');
 
 const MAIL_LOGO_CID = 'valleycroft-logo';
 const MAIL_LOGO_PATH = path.join(__dirname, '../assets/mail-logo.png');
+const FRONTEND_LOGO_CANDIDATES = [
+  path.join(__dirname, '../../../valleycroft_frontend/public/Valley Croft Farm.png'),
+  path.join(__dirname, '../../../valleycroft_frontend/public/Valley_Croft_Farm-removebg-preview.png'),
+];
 
 function resolveMailLogoFile() {
   const fromEnv = String(process.env.MAIL_LOGO_PATH || '').trim();
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
   if (fs.existsSync(MAIL_LOGO_PATH)) return MAIL_LOGO_PATH;
+  for (const candidate of FRONTEND_LOGO_CANDIDATES) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
   return null;
 }
 const QUOTATION_UPDATE_FIELDS = [
@@ -145,19 +152,37 @@ function buildQuotationPdfBuffer(quotation) {
 
     // Brand header with logo when available
     const logoFile = resolveMailLogoFile();
+    const headerTop = doc.y;
     if (logoFile) {
       try {
-        doc.image(logoFile, left, doc.y, { width: 72, height: 72, fit: 'contain' });
-        doc.y += 80;
-      } catch {
-        /* keep text-only header if image fails */
+        const logoW = 110;
+        const logoH = 110;
+        doc.image(logoFile, left, headerTop, { fit: [logoW, logoH], align: 'center', valign: 'center' });
+        doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left + logoW + 16, headerTop + 28, {
+          width: contentWidth - logoW - 16,
+        });
+        doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text(
+          'Agro-Tourism Event Quotation',
+          left + logoW + 16,
+          headerTop + 62,
+          { width: contentWidth - logoW - 16 }
+        );
+        doc.y = Math.max(doc.y, headerTop + logoH + 12);
+      } catch (err) {
+        console.warn('[quotation pdf] logo embed failed:', err?.message || err);
+        doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, headerTop, { width: contentWidth });
+        doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
+          width: contentWidth,
+        });
+        doc.moveDown(0.8);
       }
+    } else {
+      doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, headerTop, { width: contentWidth });
+      doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
+        width: contentWidth,
+      });
+      doc.moveDown(0.8);
     }
-    doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, doc.y, { width: contentWidth });
-    doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
-      width: contentWidth,
-    });
-    doc.moveDown(0.8);
 
     // Green quotation pill
     ensureSpace(38);

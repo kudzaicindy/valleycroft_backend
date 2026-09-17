@@ -34,7 +34,7 @@ function resolveMailLogoUrl() {
     .replace(/\/$/, '');
   const origin =
     !fe || /localhost|127\.0\.0\.1/i.test(fe) ? 'https://www.valleycroftfarm.com' : fe;
-  return `${origin}/Valley_Croft_Farm-removebg-preview.png`;
+  return `${origin}/${encodeURI('Valley Croft Farm.png')}`;
 }
 
 /**
@@ -391,7 +391,7 @@ function wrapLayout(opts) {
   const logoSrc = resolveMailLogoSrc(opts.logoCid);
   const logoBlock = logoSrc
     ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 12px;"><tr><td style="background:#ffffff;padding:12px 16px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-<img src="${escapeHtml(logoSrc)}" alt="${escapeHtml(name)}" width="100" style="display:block;max-width:100px;height:auto;margin:0 auto;" />
+<img src="${escapeHtml(logoSrc)}" alt="${escapeHtml(name)}" width="140" style="display:block;max-width:140px;height:auto;margin:0 auto;" />
 </td></tr></table>`
     : '';
 
