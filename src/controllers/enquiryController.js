@@ -302,6 +302,23 @@ const closeEnquiry = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: enquiry });
 });
 
+const deleteEnquiry = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry) return res.status(404).json({ success: false, message: 'Enquiry not found' });
+  const before = enquiry.toObject();
+  await enquiry.deleteOne();
+  await logAudit({
+    userId: req.user._id,
+    role: req.user.role,
+    action: 'delete',
+    entity: 'Enquiry',
+    entityId: req.params.id,
+    before,
+    req,
+  });
+  return res.json({ success: true, message: 'Enquiry deleted' });
+});
+
 module.exports = {
   getFoodAddOnCatalogue,
   quoteEventFood,
@@ -310,4 +327,5 @@ module.exports = {
   getEnquiryById,
   respondToEnquiry,
   closeEnquiry,
+  deleteEnquiry,
 };

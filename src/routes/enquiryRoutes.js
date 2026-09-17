@@ -14,5 +14,6 @@ router.get('/', protect, authorize('admin', 'ceo', 'finance'), controller.listEn
 router.get('/:id', protect, authorize('admin', 'ceo', 'finance'), controller.getEnquiryById);
 router.post('/:id/respond', protect, authorize('admin', 'ceo'), controller.respondToEnquiry);
 router.patch('/:id/close', protect, authorize('admin', 'ceo'), controller.closeEnquiry);
+router.delete('/:id', protect, authorize('admin', 'finance'), controller.deleteEnquiry);
 
 module.exports = router;
