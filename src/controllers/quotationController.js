@@ -178,27 +178,22 @@ function buildQuotationPdfBuffer(quotation) {
       });
     }
 
-    // ── Header ──────────────────────────────────────────────
+    // ── Header (centered logo only) ─────────────────────────
     const logoFile = resolveMailLogoFile();
     const headerTop = doc.y;
-    let headerBottom = headerTop + 64;
+    const logoSize = 140;
+    let headerBottom = headerTop;
 
     if (logoFile) {
       try {
-        doc.image(logoFile, left, headerTop, { fit: [78, 78], align: 'center', valign: 'center' });
-        headerBottom = Math.max(headerBottom, headerTop + 78);
+        const logoX = left + (contentWidth - logoSize) / 2;
+        doc.image(logoFile, logoX, headerTop, { fit: [logoSize, logoSize], align: 'center', valign: 'center' });
+        headerBottom = headerTop + logoSize;
       } catch (err) {
         console.warn('[quotation pdf] logo embed failed:', err?.message || err);
       }
     }
-
-    const textX = logoFile ? left + 96 : left;
-    const textW = logoFile ? contentWidth - 96 : contentWidth;
-    doc.font('Helvetica-Bold').fontSize(24).fillColor(brand).text('ValleyCroft', textX, headerTop + 8, { width: textW });
-    doc.font('Helvetica').fontSize(11).fillColor(muted).text('Agro-Tourism Event Quotation', textX, headerTop + 38, {
-      width: textW,
-    });
-    doc.y = headerBottom + 16;
+    doc.y = headerBottom + 18;
 
     // Quote number banner
     ensureSpace(44);
