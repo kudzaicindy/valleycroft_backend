@@ -122,7 +122,9 @@ setToken(data.token);
 
 Returns rooms where `isAvailable === true`, sorted by `order`.
 
-**Response:** `{ success: true, data: [{ _id, name, description, type, capacity, pricePerNight, amenities, images, order }, ...] }`
+**Response:** `{ success: true, data: [{ _id, name, description, type, capacity, pricePerNight, amenities, images, order, blockedDates?, availableForDates? }, ...] }`
+
+Optional query `?checkIn=&checkOut=` sets `availableForDates` (false if overlapping bookings **or** `blockedDates` nights).
 
 ### GET `/api/rooms/:id` (Public)
 
@@ -130,13 +132,28 @@ Returns rooms where `isAvailable === true`, sorted by `order`.
 
 ### POST `/api/rooms` (Admin)
 
-**Body:** `{ name, description?, type: 'bnb'|'event-space', capacity?, pricePerNight?, amenities?: string[], images?: string[], isAvailable?: boolean, order? }`
+**Body:** `{ name, description?, type, roomType?, spaceCategory?, capacity?, pricePerNight?, amenities?: string[], images?: string[], isAvailable?: boolean, blockedDates?: string[], order? }`
+
+**`type` (required)** — one of:
+`bnb`, `event-space`, `conference-venue`, `event-venue`, `garden-venue`, `wedding-venue`, `cottage`, `lodge`, `farmhouse`, `suite`, `other`
+
+**`roomType` (optional):** `cottage`, `event-venue`, `lodge`, `farmhouse`, `suite`, `conference-venue`, `wedding-venue`, `other`
+
+**`spaceCategory` (optional):** `room`, `event-hire`
+
+**`blockedDates` (optional):** `YYYY-MM-DD[]` — admin-closed calendar days. Guest booking and `?checkIn=&checkOut=` availability treat any overlapping night (check-in inclusive, check-out exclusive) as unavailable. Send the full array on each calendar toggle save via `PUT`.
 
 **Response:** `{ success: true, data: <room> }`
 
 ### PUT `/api/rooms/:id` (Admin)
 
-**Body:** Same fields as POST (partial update).
+**Body:** Same fields as POST (partial update). Include `blockedDates` to persist calendar blocks.
+
+**Images:** Prefer `POST /api/rooms/:id/images` (multipart FormData) and `DELETE /api/rooms/:id/images`.
+
+Accepted file field names: `images`, `image`, `file`, `files`, `photo`, `photos` (max 15).
+
+A PUT with `images: []` is **ignored** so a room-form save does not wipe a gallery right after upload. To remove photos, call the delete-images endpoint (or PUT a non-empty `images` array to replace).
 
 ### DELETE `/api/rooms/:id` (Admin)
 

@@ -21,6 +21,31 @@ function muted() {
   return '#5c6d64';
 }
 
+/**
+ * Public absolute URL for the logo in HTML emails.
+ * Prefer MAIL_LOGO_URL; otherwise FRONTEND_URL (skip localhost for recipients) + site logo path.
+ */
+function resolveMailLogoUrl() {
+  const explicit = (process.env.MAIL_LOGO_URL || '').trim();
+  if (explicit) return explicit;
+  const fe = String(process.env.FRONTEND_URL || '')
+    .split(',')[0]
+    .trim()
+    .replace(/\/$/, '');
+  const origin =
+    !fe || /localhost|127\.0\.0\.1/i.test(fe) ? 'https://www.valleycroftfarm.com' : fe;
+  return `${origin}/Valley_Croft_Farm-removebg-preview.png`;
+}
+
+/**
+ * Optional CID for inline logo attachment (more reliable than remote URLs in some clients).
+ * Pass logoCid: 'valleycroft-logo' when attaching the file with that content id.
+ */
+function resolveMailLogoSrc(logoCid) {
+  if (logoCid) return `cid:${String(logoCid).replace(/^cid:/i, '')}`;
+  return resolveMailLogoUrl();
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -363,10 +388,10 @@ function wrapLayout(opts) {
   const name = bizName();
   const a = accent();
   const pre = escapeHtml(opts.preheader || opts.headline);
-  const logoUrl = (process.env.MAIL_LOGO_URL || '').trim();
-  const logoBlock = logoUrl
+  const logoSrc = resolveMailLogoSrc(opts.logoCid);
+  const logoBlock = logoSrc
     ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 12px;"><tr><td style="background:#ffffff;padding:12px 16px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-<img src="${escapeHtml(logoUrl)}" alt="" width="100" style="display:block;max-width:100px;height:auto;margin:0 auto;" />
+<img src="${escapeHtml(logoSrc)}" alt="${escapeHtml(name)}" width="100" style="display:block;max-width:100px;height:auto;margin:0 auto;" />
 </td></tr></table>`
     : '';
 
@@ -729,12 +754,68 @@ ${cancellationText}${notesText}`;
   });
 }
 
+/**
+ * HTML + text body for quotation emails (PDF attached separately).
+ * @param {object} quotation
+ * @param {{ logoCid?: string, message?: string }} [opts]
+ */
+function quotationSentGuest(quotation = {}, opts = {}) {
+  const clientName = quotation.clientName || 'Client';
+  const number = quotation.quotationNumber || '—';
+  const eventType = quotation.eventType || quotation.eventTitle || 'Event';
+  const eventDate = formatDate(quotation.eventDate);
+  const venue = quotation.venue || 'ValleyCroft Farm';
+  const guests = quotation.guestCount != null && quotation.guestCount !== '' ? String(quotation.guestCount) : '—';
+  const total = formatMoney(quotation.total);
+  const validUntil = formatDate(quotation.validUntil);
+  const customMessage = String(opts.message || '').trim();
+
+  const rows = [
+    detailRow('Quotation', number),
+    detailRow('Event', eventType),
+    detailRow('Date', eventDate),
+    detailRow('Venue', venue),
+    detailRow('Guests', guests),
+    detailMoneyRow('Total', quotation.total),
+    detailRow('Valid until', validUntil),
+  ];
+  const { html: tableHtml, text: tableText } = buildDetailTable(rows);
+
+  const introHtml = customMessage
+    ? `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">${escapeHtml(customMessage).replace(/\n/g, '<br>')}</p>`
+    : `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">Please find your Valley Croft event quotation attached as a PDF.</p>`;
+  const introText = customMessage || 'Please find your Valley Croft event quotation attached as a PDF.';
+
+  const blocksHtml = `${introHtml}
+<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Quotation summary</h2>
+${tableHtml}
+<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:${muted()};">If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.</p>`;
+
+  const blocksText = `${introText}
+
+QUOTATION SUMMARY
+${tableText}
+
+If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.`;
+
+  return wrapLayout({
+    headline: `Quotation ${number}`,
+    preheader: `${eventType} · ${total} · ${number}`,
+    lead: `Dear ${clientName},`,
+    blocksHtml,
+    blocksText,
+    logoCid: opts.logoCid || undefined,
+  });
+}
+
 module.exports = {
   bizName,
+  resolveMailLogoUrl,
   newInternalBookingAdmin,
   newBookingRequestAdmin,
   bookingRequestReceivedGuest,
   bookingConfirmedInvoiceGuest,
+  quotationSentGuest,
   buildBankPaymentInstructionsText,
   buildBankPaymentInstructionsHtml,
   buildConfirmationDepositSummaryText,

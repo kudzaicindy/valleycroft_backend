@@ -1,10 +1,21 @@
 const PDFDocument = require('pdfkit');
-const { marked } = require('marked');
+const fs = require('fs');
+const path = require('path');
 const Quotation = require('../models/Quotation');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const invoiceNotify = require('../services/invoiceNotifyService');
+const mailTemplates = require('../services/mailTemplates');
 
+const MAIL_LOGO_CID = 'valleycroft-logo';
+const MAIL_LOGO_PATH = path.join(__dirname, '../assets/mail-logo.png');
+
+function resolveMailLogoFile() {
+  const fromEnv = String(process.env.MAIL_LOGO_PATH || '').trim();
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+  if (fs.existsSync(MAIL_LOGO_PATH)) return MAIL_LOGO_PATH;
+  return null;
+}
 const QUOTATION_UPDATE_FIELDS = [
   'quotationNumber',
   'clientName',
@@ -132,7 +143,16 @@ function buildQuotationPdfBuffer(quotation) {
       doc.font('Helvetica').text(` ${value || '—'}`);
     }
 
-    // Brand header
+    // Brand header with logo when available
+    const logoFile = resolveMailLogoFile();
+    if (logoFile) {
+      try {
+        doc.image(logoFile, left, doc.y, { width: 72, height: 72, fit: 'contain' });
+        doc.y += 80;
+      } catch {
+        /* keep text-only header if image fails */
+      }
+    }
     doc.font('Helvetica-Bold').fontSize(28).fillColor(brandGreen).text('ValleyCroft', left, doc.y, { width: contentWidth });
     doc.font('Helvetica-Bold').fontSize(14).fillColor('#111827').text('Agro-Tourism Event Quotation', left, doc.y + 2, {
       width: contentWidth,
@@ -326,26 +346,48 @@ const getPdf = asyncHandler(async (req, res) => {
 const sendEmail = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) return res.status(404).json({ success: false, message: 'Quotation not found' });
-  const to = String(req.body.to || quotation.clientEmail || '').trim();
+  const to = String(req.body.to || req.body.email || quotation.clientEmail || '').trim();
   if (!to) return res.status(400).json({ success: false, message: 'Recipient email is required' });
   if (!mailConfigured()) {
     return res.status(400).json({ success: false, message: 'Mail is not configured on the server' });
   }
   const pdfBuffer = await buildQuotationPdfBuffer(quotation.toObject());
   const subject = req.body.subject || `Quotation ${quotation.quotationNumber}`;
-  const text = req.body.message || `Dear ${quotation.clientName || 'Client'},\n\nPlease find your quotation attached.`;
+  const message =
+    req.body.message ||
+    `Dear ${quotation.clientName || 'Client'},\n\nPlease find your quotation attached.`;
+
+  const logoFile = resolveMailLogoFile();
+  const logoCid = logoFile ? MAIL_LOGO_CID : undefined;
+  const { html, text } = mailTemplates.quotationSentGuest(quotation.toObject(), {
+    message,
+    logoCid,
+  });
+
+  const attachments = [
+    {
+      filename: `${quotation.quotationNumber || quotation._id}.pdf`,
+      content: pdfBuffer,
+      contentType: 'application/pdf',
+    },
+  ];
+  if (logoFile) {
+    attachments.push({
+      filename: 'valleycroft-logo.png',
+      path: logoFile,
+      cid: logoCid,
+      contentDisposition: 'inline',
+      contentType: 'image/png',
+    });
+  }
+
   const info = await invoiceNotify.sendViaMailTransport({
     from: getMailFrom(),
     to,
     subject,
     text,
-    attachments: [
-      {
-        filename: `${quotation.quotationNumber || quotation._id}.pdf`,
-        content: pdfBuffer,
-        contentType: 'application/pdf',
-      },
-    ],
+    html,
+    attachments,
   });
   if (quotation.status === 'draft') {
     quotation.status = 'sent';
