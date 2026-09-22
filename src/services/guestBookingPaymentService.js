@@ -185,6 +185,29 @@ async function expireUnpaidGuestBookings({ roomId = null, userId = null } = {}) 
         );
       }
     }
+
+    try {
+      const { scheduleGuestBookingPaymentExpiredEmails } = require('./invoiceNotifyService');
+      scheduleGuestBookingPaymentExpiredEmails({
+        guestName: booking.guestName,
+        guestEmail: booking.guestEmail,
+        guestPhone: booking.guestPhone,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        totalAmount: booking.totalAmount,
+        deposit: booking.deposit,
+        trackingCode: booking.trackingCode,
+        paymentDueAt: booking.paymentDueAt,
+        guestCount: booking.guestCount,
+        foodAddOns: booking.foodAddOns,
+        pricingBreakdown: booking.pricingBreakdown,
+        guestBookingId: booking._id,
+        relatedId: booking._id,
+      });
+    } catch (err) {
+      console.error('[payment-hold] expiry email schedule failed:', err?.message || err);
+    }
+
     ids.push(String(booking._id));
   }
 

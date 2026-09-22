@@ -658,6 +658,65 @@ ${cancellationPolicyPendingGuestHtml()}`;
   });
 }
 
+/** Guest: unpaid hold expired — booking released */
+function bookingPaymentExpiredGuest(payload) {
+  const hours = paymentDueHoursAfterConfirm();
+  const rows = [
+    detailRow('Reference', bookingPaymentReference(payload.trackingCode, payload.guestName)),
+    detailRow('Room', payload.roomName || '—'),
+    detailRow('Check-in', formatDate(payload.checkIn)),
+    detailRow('Check-out', formatDate(payload.checkOut)),
+    detailRow('Payment deadline', formatDate(payload.paymentDueAt) || '—'),
+    detailMoneyRow('Amount that was due', payload.totalAmount ?? payload.total ?? 0),
+  ];
+  const { html: tableHtml, text: tableText } = buildDetailTable(rows);
+  const a = accent();
+
+  const blocksHtml = `<p style="margin:0 0 16px;font-size:17px;line-height:1.55;color:#243830;">We held your booking for <strong>${hours} hours</strong> after confirmation so you could complete payment. We did not receive payment in time, so this reservation has been <strong style="color:${a};">released</strong>.</p>
+<p style="margin:0 0 20px;padding:14px 18px;background:#fff9f0;border-radius:10px;border:1px solid #f0e6d8;font-size:15px;color:#5c5348;line-height:1.5;">The dates are open again for other guests. If you still wish to stay with us, please submit a new booking request on our website.</p>
+${tableHtml}
+<p style="margin:18px 0 0;font-size:14px;line-height:1.5;color:#5c5348;">Questions? Simply reply to this email — we are happy to help.</p>`;
+
+  const blocksText = `We held your booking for ${hours} hours after confirmation so you could complete payment. We did not receive payment in time, so this reservation has been released.\n\nThe dates are open again for other guests. If you still wish to stay with us, please submit a new booking request.\n\n${tableText}\n\nQuestions? Reply to this email.`;
+
+  return wrapLayout({
+    headline: 'Booking released — payment not received',
+    preheader: `Ref ${payload.trackingCode || ''} · reservation cancelled`,
+    lead: `Hi ${payload.guestName || 'there'},`,
+    blocksHtml,
+    blocksText,
+  });
+}
+
+/** Admin: unpaid hold expired — room freed */
+function bookingPaymentExpiredAdmin(payload) {
+  const hours = paymentDueHoursAfterConfirm();
+  const rows = [
+    detailRow('Guest', payload.guestName),
+    detailRow('Email', payload.guestEmail || '—'),
+    detailRow('Phone', payload.guestPhone || '—'),
+    detailRow('Room', payload.roomName || '—'),
+    detailRow('Check-in', formatDate(payload.checkIn)),
+    detailRow('Check-out', formatDate(payload.checkOut)),
+    detailRow('Reference', bookingPaymentReference(payload.trackingCode, payload.guestName)),
+    detailRow('Payment deadline', formatDate(payload.paymentDueAt) || '—'),
+    detailMoneyRow('Amount unpaid', payload.totalAmount ?? payload.total ?? 0),
+    detailRow('Reason', `No payment within ${hours} hours of confirmation`),
+  ];
+  const { html: tableHtml, text: tableText } = buildDetailTable(rows);
+
+  const blocksHtml = `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">A confirmed booking was auto-cancelled because payment was not received within the hold window. The room is available again for those dates.</p>${tableHtml}`;
+  const blocksText = `A confirmed booking was auto-cancelled (payment not received within ${hours}h). The room is available again.\n\n${tableText}`;
+
+  return wrapLayout({
+    headline: 'Booking revoked — unpaid hold expired',
+    preheader: `${payload.guestName || 'Guest'} · ${payload.trackingCode || ''} · released`,
+    lead: 'No action required unless you want to follow up with the guest.',
+    blocksHtml,
+    blocksText,
+  });
+}
+
 function lineItemsHtml(lineItems) {
   const a = accent();
   const head = `<tr style="background:${accentSoft()};">
@@ -815,6 +874,8 @@ module.exports = {
   newBookingRequestAdmin,
   bookingRequestReceivedGuest,
   bookingConfirmedInvoiceGuest,
+  bookingPaymentExpiredGuest,
+  bookingPaymentExpiredAdmin,
   quotationSentGuest,
   buildBankPaymentInstructionsText,
   buildBankPaymentInstructionsHtml,

@@ -930,11 +930,104 @@ function scheduleInternalBookingCreatedAdmin(bookingLean) {
   });
 }
 
+async function deliverPaymentExpiredGuestEmail(payload) {
+  const enriched = await enrichGuestBookingEmailPayload({
+    ...payload,
+    relatedModel: 'GuestBooking',
+    guestBookingId: payload.guestBookingId || payload.relatedId,
+  });
+  const to = (enriched.guestEmail || payload.guestEmail || '').trim();
+  if (!to) return { skipped: true, reason: 'no_guest_email', channel: 'email' };
+  const { html, text } = mailTemplates.bookingPaymentExpiredGuest(enriched);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — Booking released · payment not received`;
+  return sendMail({
+    to,
+    subject,
+    html,
+    text,
+    templateKey: 'guest_booking_payment_expired_guest',
+    relatedModel: 'GuestBooking',
+    relatedId: payload.guestBookingId || payload.relatedId,
+  });
+}
+
+async function deliverPaymentExpiredAdminEmail(payload) {
+  const enriched = await enrichGuestBookingEmailPayload({
+    ...payload,
+    relatedModel: 'GuestBooking',
+    guestBookingId: payload.guestBookingId || payload.relatedId,
+  });
+  const recipients = adminBookingNotifyEmails();
+  const { html, text } = mailTemplates.bookingPaymentExpiredAdmin(enriched);
+  const biz = mailTemplates.bizName();
+  const subject = `${biz} — Booking revoked · ${payload.trackingCode || 'unpaid hold'}`;
+  const relatedId = payload.guestBookingId || payload.relatedId;
+
+  if (!recipients.length) {
+    await logOutboundEmail({
+      templateKey: 'guest_booking_payment_expired_admin',
+      status: 'skipped',
+      skipReason: 'admin_email_not_configured',
+      from: getMailFrom() || '',
+      to: '',
+      subject,
+      textPreview: text,
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'admin_email_not_configured' };
+  }
+  if (!mailConfigured()) {
+    await logOutboundEmail({
+      templateKey: 'guest_booking_payment_expired_admin',
+      status: 'skipped',
+      skipReason: 'mail_not_configured',
+      from: '',
+      to: recipients.join(', '),
+      subject,
+      textPreview: text,
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+    return { skipped: true, reason: 'mail_not_configured' };
+  }
+
+  for (const to of recipients) {
+    await sendMail({
+      to,
+      subject,
+      html,
+      text,
+      templateKey: 'guest_booking_payment_expired_admin',
+      relatedModel: 'GuestBooking',
+      relatedId,
+    });
+  }
+  return { sent: true, channel: 'email', toCount: recipients.length };
+}
+
+/**
+ * After unpaid payment hold expires: notify guest + admin that the reservation was released.
+ */
+function scheduleGuestBookingPaymentExpiredEmails(payload) {
+  if (!payload) return;
+  setImmediate(() => {
+    deliverPaymentExpiredGuestEmail(payload).catch((err) => {
+      console.error('[booking-notify] payment-expired guest email failed:', err.message);
+    });
+    deliverPaymentExpiredAdminEmail(payload).catch((err) => {
+      console.error('[booking-notify] payment-expired admin email failed:', err.message);
+    });
+  });
+}
+
 module.exports = {
   scheduleInvoiceDelivery,
   sendInvoiceDeliveryNow,
   scheduleNewGuestBookingEmails,
   scheduleInternalBookingCreatedAdmin,
+  scheduleGuestBookingPaymentExpiredEmails,
   mailConfigured,
   smtpConfigured,
   gmailAppPasswordConfigured,
