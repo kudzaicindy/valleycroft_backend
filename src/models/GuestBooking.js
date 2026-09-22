@@ -33,6 +33,21 @@ const guestBookingSchema = new mongoose.Schema({
   totalAmount: Number,
   deposit: Number,
   status: { type: String, enum: ['pending', 'confirmed', 'cancelled'], default: 'pending' },
+  /**
+   * Payment hold after confirm:
+   * unpaid → reserved until paymentDueAt; paid → kept; expired → auto-revoked (also status cancelled).
+   */
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'paid', 'expired'],
+    default: 'unpaid',
+  },
+  confirmedAt: Date,
+  /** Deadline to pay after confirmation (default +24h). Past this → auto-cancel if still unpaid. */
+  paymentDueAt: Date,
+  paidAt: Date,
+  revokedAt: Date,
+  revocationReason: { type: String, enum: ['payment_timeout', 'admin', 'guest', 'other'] },
   trackingCode: { type: String, unique: true, required: true },
   source: { type: String, default: 'website' },
   notes: String,
@@ -50,5 +65,7 @@ const guestBookingSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 guestBookingSchema.index({ guestEmail: 1 });
+guestBookingSchema.index({ status: 1, paymentStatus: 1, paymentDueAt: 1 });
+guestBookingSchema.index({ roomId: 1, status: 1, paymentDueAt: 1 });
 
 module.exports = mongoose.model('GuestBooking', guestBookingSchema);

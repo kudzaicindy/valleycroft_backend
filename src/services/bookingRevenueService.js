@@ -287,6 +287,7 @@ async function postGuestBookingRevenue(gb, userId) {
       amountOwed: total,
       amountPaid: 0,
       status: debtorStatusFor(total, 0),
+      dueDate: gb.paymentDueAt || undefined,
       guestBookingRef: gb._id,
       receivableAccountId: arAcc._id,
       createdBy: userId,
@@ -299,8 +300,9 @@ async function postGuestBookingRevenue(gb, userId) {
     if (Number(debtor.amountOwed) !== total) {
       debtor.amountOwed = total;
       debtor.status = debtorStatusFor(total, Number(debtor.amountPaid) || 0);
-      await debtor.save();
     }
+    if (gb.paymentDueAt) debtor.dueDate = gb.paymentDueAt;
+    await debtor.save();
   }
 
   let roomTxId = gb.roomRevenueTransactionId || gb.revenueTransactionId;

@@ -53,6 +53,15 @@ function roomHasBlockedOverlap(blockedDates, checkIn, checkOut) {
 async function isRoomAvailableForDates(roomId, checkIn, checkOut, excludeGuestBookingId = null, excludeBookingId = null) {
   const start = new Date(checkIn);
   const end = new Date(checkOut);
+
+  // Drop unpaid confirmed holds that passed paymentDueAt before checking overlaps.
+  try {
+    const { expireUnpaidGuestBookings } = require('../services/guestBookingPaymentService');
+    await expireUnpaidGuestBookings({ roomId });
+  } catch (err) {
+    console.error('[availability] payment-hold expiry failed:', err?.message || err);
+  }
+
   const room = await Room.findById(roomId).lean().select('blockedDates');
   if (!room) return false;
   if (roomHasBlockedOverlap(room.blockedDates, start, end)) return false;

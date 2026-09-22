@@ -148,6 +148,13 @@ async function recordDebtorPayment(debtorId, opts) {
     throw err;
   }
 
+  try {
+    const { syncGuestBookingPaidFromDebtor } = require('./guestBookingPaymentService');
+    await syncGuestBookingPaidFromDebtor(debtor, paidAt);
+  } catch (err) {
+    console.error('[debtor-payment] guest booking paid sync failed:', err?.message || err);
+  }
+
   return {
     debtor,
     payment,

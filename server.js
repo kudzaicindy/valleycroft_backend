@@ -139,6 +139,22 @@ async function start() {
         console.error('[mail] startup check error:', err?.message || err);
       }
     });
+
+    // Expire unpaid confirmed holds (default 24h) so rooms reopen.
+    const runPaymentHoldExpiry = async () => {
+      try {
+        const { expireUnpaidGuestBookings } = require('./src/services/guestBookingPaymentService');
+        const result = await expireUnpaidGuestBookings();
+        if (result.expired > 0) {
+          console.log(`[payment-hold] expired ${result.expired} unpaid booking(s):`, result.ids.join(', '));
+        }
+      } catch (err) {
+        console.error('[payment-hold] expiry job failed:', err?.message || err);
+      }
+    };
+    setImmediate(runPaymentHoldExpiry);
+    const holdMs = Number(process.env.PAYMENT_HOLD_EXPIRY_INTERVAL_MS) || 5 * 60 * 1000;
+    setInterval(runPaymentHoldExpiry, holdMs);
   });
 }
 

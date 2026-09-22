@@ -9,6 +9,7 @@ const {
   getFoodAddOnCatalogue,
   quoteGuestBooking,
   postGuestBookingRevenue,
+  markGuestBookingPaid,
 } = require('../controllers/guestBookingController');
 
 const router = express.Router();
@@ -22,6 +23,7 @@ router.get('/track', trackBooking);
 // Admin, CEO, Finance (read)
 router.get('/', protect, authorize('admin', 'ceo', 'finance'), getAllGuestBookings);
 router.post('/:id/post-revenue', protect, authorize('admin'), postGuestBookingRevenue);
+router.post('/:id/mark-paid', protect, authorize('admin', 'ceo', 'finance'), markGuestBookingPaid);
 router.put('/:id', protect, authorize('admin'), updateGuestBooking);
 router.delete('/:id', protect, authorize('admin'), deleteGuestBooking);
 

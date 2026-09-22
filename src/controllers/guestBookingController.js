@@ -5,6 +5,7 @@ const logAudit = require('../utils/audit');
 const { withRoomPreview, withRoomPreviewMany } = require('../utils/bookingPreview');
 const { isRoomAvailableForDates } = require('../utils/availability');
 const bookingRevenueService = require('../services/bookingRevenueService');
+const guestBookingPaymentService = require('../services/guestBookingPaymentService');
 const { scheduleNewGuestBookingEmails } = require('../services/invoiceNotifyService');
 const {
   parseFoodAddOns,
@@ -420,16 +421,30 @@ const updateGuestBooking = asyncHandler(async (req, res) => {
   }
   if (req.body.status) booking.status = req.body.status;
   if (req.body.notes !== undefined) booking.notes = req.body.notes;
+
+  const willConfirm = before.status !== 'confirmed' && booking.status === 'confirmed';
+  if (willConfirm) {
+    guestBookingPaymentService.applyPaymentHoldOnConfirm(booking);
+  }
+
   await booking.save();
 
-  const becameConfirmed = before.status !== 'confirmed' && booking.status === 'confirmed';
+  const becameConfirmed = willConfirm;
   const cancelledAfterConfirm = before.status === 'confirmed' && booking.status === 'cancelled';
 
   if (becameConfirmed) {
     try {
       await bookingRevenueService.onGuestBookingConfirmed(booking, req.user._id);
     } catch (err) {
-      await GuestBooking.findByIdAndUpdate(booking._id, { status: before.status });
+      await GuestBooking.findByIdAndUpdate(booking._id, {
+        status: before.status,
+        paymentStatus: before.paymentStatus || 'unpaid',
+        confirmedAt: before.confirmedAt,
+        paymentDueAt: before.paymentDueAt,
+        paidAt: before.paidAt,
+        revokedAt: before.revokedAt,
+        revocationReason: before.revocationReason,
+      });
       return res.status(400).json({
         success: false,
         message: err.message || 'Could not record revenue / debtor for this confirmation',
@@ -439,6 +454,12 @@ const updateGuestBooking = asyncHandler(async (req, res) => {
   }
   if (cancelledAfterConfirm) {
     await bookingRevenueService.reverseGuestBookingRevenue(booking, req.user._id);
+    if (booking.paymentStatus !== 'paid') {
+      booking.paymentStatus = booking.paymentStatus === 'expired' ? 'expired' : 'unpaid';
+      booking.revokedAt = booking.revokedAt || new Date();
+      booking.revocationReason = booking.revocationReason || 'admin';
+      await booking.save();
+    }
   }
 
   await logAudit({
@@ -453,6 +474,48 @@ const updateGuestBooking = asyncHandler(async (req, res) => {
   });
   const updated = await GuestBooking.findById(booking._id).populate('roomId', 'name type').lean();
   res.json({ success: true, data: withRoomPreview(updated) });
+});
+
+/** Admin: mark confirmed booking as paid (records remaining debtor balance). */
+const markGuestBookingPaid = asyncHandler(async (req, res) => {
+  try {
+    const result = await guestBookingPaymentService.markGuestBookingPaid(req.params.id, {
+      userId: req.user._id,
+      amount: req.body.amount,
+      method: req.body.method || 'manual',
+      reference: req.body.reference,
+      note: req.body.note,
+      paidAt: req.body.paidAt,
+    });
+    await logAudit({
+      userId: req.user._id,
+      role: req.user.role,
+      action: 'update',
+      entity: 'GuestBooking',
+      entityId: result.booking._id,
+      after: { paymentStatus: 'paid', paidAt: result.booking.paidAt },
+      req,
+    });
+    const updated = await GuestBooking.findById(result.booking._id).populate('roomId', 'name type').lean();
+    return res.json({
+      success: true,
+      data: withRoomPreview(updated),
+      alreadyPaid: Boolean(result.alreadyPaid),
+      partial: Boolean(result.partial),
+      payment: result.payment
+        ? {
+            debtorPaymentId: result.payment.payment?._id,
+            remaining: result.payment.meta?.remaining,
+          }
+        : undefined,
+      message: result.partial
+        ? 'Partial payment recorded; booking stays unpaid until the balance is cleared'
+        : undefined,
+    });
+  } catch (err) {
+    const status = err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message || 'Could not mark booking as paid' });
+  }
 });
 
 /** Admin: post or repair split room + food revenue transactions */
@@ -515,6 +578,7 @@ module.exports = {
   trackBooking,
   getAllGuestBookings,
   updateGuestBooking,
+  markGuestBookingPaid,
   postGuestBookingRevenue,
   deleteGuestBooking,
 };
