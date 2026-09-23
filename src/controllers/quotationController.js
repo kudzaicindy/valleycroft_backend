@@ -367,6 +367,20 @@ function buildQuotationPdfBuffer(quotation) {
       }
     }
 
+    // ── Banking details (bottom) ────────────────────────────
+    const bank = mailTemplates.bookingBankDetails();
+    sectionTitle('Banking details');
+    ensureSpace(88);
+    const bankPanelH = 86;
+    const bankTop = doc.y;
+    drawPanel(left, bankTop, contentWidth, bankPanelH);
+    const bankColW = (contentWidth - 30) / 2;
+    kv(left + 10, bankTop + 12, 'Bank', bank.bankName, bankColW);
+    kv(left + 10 + bankColW + 10, bankTop + 12, 'Branch code', bank.branchCode, bankColW);
+    kv(left + 10, bankTop + 48, 'Account number', bank.accountNumber, bankColW);
+    kv(left + 10 + bankColW + 10, bankTop + 48, 'Account name', bank.accountName, bankColW);
+    doc.y = bankTop + bankPanelH + 8;
+
     // Footer directly under content — never pinned to page bottom
     ensureSpace(22);
     const footY = doc.y + 4;

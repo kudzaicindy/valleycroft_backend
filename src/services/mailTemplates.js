@@ -845,17 +845,37 @@ function quotationSentGuest(quotation = {}, opts = {}) {
     : `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">Please find your Valley Croft event quotation attached as a PDF.</p>`;
   const introText = customMessage || 'Please find your Valley Croft event quotation attached as a PDF.';
 
+  const bank = bookingBankDetails();
+  const bankRows = [
+    detailRow('Bank', bank.bankName),
+    detailRow('Branch code', bank.branchCode),
+    detailRow('Account number', bank.accountNumber),
+    detailRow('Account name', bank.accountName),
+  ];
+  const { html: bankTableHtml, text: bankTableText } = buildDetailTable(bankRows);
+
   const blocksHtml = `${introHtml}
 <h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Quotation summary</h2>
 ${tableHtml}
-<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:${muted()};">If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.</p>`;
+<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:${muted()};">If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.</p>
+<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Banking details</h2>
+<p style="margin:0 0 12px;font-size:15px;line-height:1.55;color:#243830;">To accept this quotation, please pay by bank transfer / EFT using the details below.</p>
+${bankTableHtml}`;
 
   const blocksText = `${introText}
 
 QUOTATION SUMMARY
 ${tableText}
 
-If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.`;
+If you have any questions or would like to confirm the booking, reply to this email and we will gladly assist.
+
+BANKING DETAILS
+Bank: ${bank.bankName}
+Branch code: ${bank.branchCode}
+Account number: ${bank.accountNumber}
+Account name: ${bank.accountName}
+
+${bankTableText}`;
 
   return wrapLayout({
     headline: `Quotation ${number}`,
