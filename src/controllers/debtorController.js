@@ -1,8 +1,28 @@
 const Debtor = require('../models/Debtor');
+const DebtorPayment = require('../models/DebtorPayment');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
 const { recordDebtorPayment } = require('../services/debtorPaymentService');
 const { withRoomPreview } = require('../utils/bookingPreview');
+const invoiceNotify = require('../services/invoiceNotifyService');
+const mailTemplates = require('../services/mailTemplates');
+const {
+  loadPaymentReceiptContext,
+  buildReceiptPdfBuffer,
+  resolveMailLogoFile,
+} = require('../services/debtorPaymentReceiptService');
+
+const MAIL_LOGO_CID = 'valleycroft-logo';
+
+function getMailFrom() {
+  const from = process.env.MAIL_FROM || process.env.GMAIL_USER || '';
+  return String(from).trim();
+}
+
+function mailConfigured() {
+  return invoiceNotify.mailConfigured();
+}
+
 const DEBTOR_UPDATE_FIELDS = [
   'name',
   'contactEmail',
@@ -71,7 +91,6 @@ const pendingBookings = asyncHandler(async (req, res) => {
   const query = {
     status: { $in: ['outstanding', 'partial'] },
     $or: [{ bookingRef: { $ne: null } }, { guestBookingRef: { $ne: null } }],
-    // Keep count + page rows consistent: only include debtors that truly still owe.
     $expr: { $gt: [{ $ifNull: ['$amountOwed', 0] }, { $ifNull: ['$amountPaid', 0] }] },
   };
 
@@ -90,6 +109,19 @@ const pendingBookings = asyncHandler(async (req, res) => {
     success: true,
     data: mapDebtorRowsWithRoom(rows),
     meta: { page: parseInt(page, 10), limit: lim, total },
+  });
+});
+
+const listPayments = asyncHandler(async (req, res) => {
+  const debtor = await Debtor.findById(req.params.id).select('_id debtorNumber name').lean();
+  if (!debtor) return res.status(404).json({ success: false, message: 'Debtor not found' });
+  const payments = await DebtorPayment.find({ debtorId: debtor._id })
+    .sort({ paidAt: -1, createdAt: -1 })
+    .lean();
+  res.json({
+    success: true,
+    data: payments,
+    meta: { debtorId: debtor._id, debtorNumber: debtor.debtorNumber, name: debtor.name, total: payments.length },
   });
 });
 
@@ -144,10 +176,12 @@ const recordPayment = asyncHandler(async (req, res) => {
     related: {
       payment: {
         _id: payment._id,
+        receiptNumber: payment.receiptNumber,
         amount: payment.amount,
         paidAt: payment.paidAt,
         method: payment.method,
         reference: payment.reference,
+        remainingAfter: payment.remainingAfter,
       },
       transaction: {
         _id: tx._id,
@@ -164,8 +198,117 @@ const recordPayment = asyncHandler(async (req, res) => {
     meta: {
       ...meta,
       paymentId: payment._id,
+      receiptNumber: payment.receiptNumber,
+      debtorNumber: updated.debtorNumber,
       transactionId: tx._id,
       financialJournalEntryId,
+      receiptPdfPath: `/api/debtors/${updated._id}/payments/${payment._id}/pdf`,
+      receiptSendEmailPath: `/api/debtors/${updated._id}/payments/${payment._id}/send-email`,
+    },
+  });
+});
+
+const getPaymentPdf = asyncHandler(async (req, res) => {
+  try {
+    const ctx = await loadPaymentReceiptContext(req.params.id, req.params.paymentId);
+    const pdfBuffer = await buildReceiptPdfBuffer(ctx);
+    const filename = `${ctx.payment.receiptNumber || ctx.payment._id}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send(pdfBuffer);
+  } catch (err) {
+    const status = err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message || 'Could not build receipt PDF' });
+  }
+});
+
+const sendPaymentReceiptEmail = asyncHandler(async (req, res) => {
+  let ctx;
+  try {
+    ctx = await loadPaymentReceiptContext(req.params.id, req.params.paymentId);
+  } catch (err) {
+    const status = err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message || 'Payment not found' });
+  }
+
+  const { payment, debtor } = ctx;
+  const to = String(
+    req.body.to || req.body.email || debtor.contactEmail || debtor.guestBookingRef?.guestEmail || ''
+  ).trim();
+  if (!to) return res.status(400).json({ success: false, message: 'Recipient email is required' });
+  if (!mailConfigured()) {
+    return res.status(400).json({ success: false, message: 'Mail is not configured on the server' });
+  }
+
+  const pdfBuffer = await buildReceiptPdfBuffer(ctx);
+  const receiptNumber = payment.receiptNumber || String(payment._id);
+  const subject = req.body.subject || `Payment receipt ${receiptNumber}`;
+  const message =
+    req.body.message ||
+    `Dear ${debtor.name || 'Client'},\n\nPlease find your payment receipt attached.`;
+
+  const logoFile = resolveMailLogoFile();
+  const logoCid = logoFile ? MAIL_LOGO_CID : undefined;
+  const { html, text } = mailTemplates.paymentReceiptSent(
+    {
+      debtorName: debtor.name,
+      guestName: debtor.name,
+      receiptNumber,
+      debtorNumber: debtor.debtorNumber,
+      amount: payment.amount,
+      paidAt: payment.paidAt,
+      method: payment.method,
+      reference: payment.reference,
+      remainingAfter: payment.remainingAfter,
+      trackingCode: debtor.guestBookingRef?.trackingCode,
+      invoiceNumber: debtor.invoiceRef?.invoiceNumber,
+    },
+    { message, logoCid }
+  );
+
+  const attachments = [
+    {
+      filename: `${receiptNumber}.pdf`,
+      content: pdfBuffer,
+      contentType: 'application/pdf',
+    },
+  ];
+  if (logoFile) {
+    attachments.push({
+      filename: 'valleycroft-logo.png',
+      path: logoFile,
+      cid: logoCid,
+      contentDisposition: 'inline',
+      contentType: 'image/png',
+    });
+  }
+
+  const info = await invoiceNotify.sendViaMailTransport({
+    from: getMailFrom(),
+    to,
+    subject,
+    text,
+    html,
+    attachments,
+  });
+
+  await logAudit({
+    userId: req.user._id,
+    role: req.user.role,
+    action: 'update',
+    entity: 'DebtorPayment',
+    entityId: payment._id,
+    after: { sentTo: to, receiptNumber, messageId: info.messageId },
+    req,
+  });
+
+  res.json({
+    success: true,
+    data: {
+      to,
+      messageId: info.messageId,
+      receiptNumber,
+      debtorNumber: debtor.debtorNumber,
     },
   });
 });
@@ -226,4 +369,14 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Debtor removed' });
 });
 
-module.exports = { list, pendingBookings, recordPayment, create, update, remove };
+module.exports = {
+  list,
+  pendingBookings,
+  listPayments,
+  recordPayment,
+  getPaymentPdf,
+  sendPaymentReceiptEmail,
+  create,
+  update,
+  remove,
+};

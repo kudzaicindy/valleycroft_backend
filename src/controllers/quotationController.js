@@ -367,19 +367,26 @@ function buildQuotationPdfBuffer(quotation) {
       }
     }
 
-    // ── Banking details (bottom) ────────────────────────────
-    const bank = mailTemplates.bookingBankDetails();
+    // ── Banking details ─────────────────────────────────────
+    const bank =
+      typeof mailTemplates.bookingBankDetails === 'function'
+        ? mailTemplates.bookingBankDetails()
+        : {
+            bankName: 'FNB',
+            branchCode: '250655',
+            accountNumber: '63157115148',
+            accountName: 'Ngimu Agriculture',
+          };
     sectionTitle('Banking details');
-    ensureSpace(88);
-    const bankPanelH = 86;
+    ensureSpace(52);
     const bankTop = doc.y;
-    drawPanel(left, bankTop, contentWidth, bankPanelH);
-    const bankColW = (contentWidth - 30) / 2;
-    kv(left + 10, bankTop + 12, 'Bank', bank.bankName, bankColW);
-    kv(left + 10 + bankColW + 10, bankTop + 12, 'Branch code', bank.branchCode, bankColW);
-    kv(left + 10, bankTop + 48, 'Account number', bank.accountNumber, bankColW);
-    kv(left + 10 + bankColW + 10, bankTop + 48, 'Account name', bank.accountName, bankColW);
-    doc.y = bankTop + bankPanelH + 8;
+    drawPanel(left, bankTop, contentWidth, 48);
+    const bankColW = (contentWidth - 24) / 4;
+    kv(left + 12, bankTop + 10, 'Bank', bank.bankName || 'FNB', bankColW - 8);
+    kv(left + 12 + bankColW, bankTop + 10, 'Branch code', bank.branchCode || '250655', bankColW - 8);
+    kv(left + 12 + bankColW * 2, bankTop + 10, 'Account number', bank.accountNumber || '63157115148', bankColW - 8);
+    kv(left + 12 + bankColW * 3, bankTop + 10, 'Account name', bank.accountName || 'Ngimu Agriculture', bankColW - 8);
+    doc.y = bankTop + 56;
 
     // Footer directly under content — never pinned to page bottom
     ensureSpace(22);

@@ -155,6 +155,20 @@ async function start() {
     setImmediate(runPaymentHoldExpiry);
     const holdMs = Number(process.env.PAYMENT_HOLD_EXPIRY_INTERVAL_MS) || 5 * 60 * 1000;
     setInterval(runPaymentHoldExpiry, holdMs);
+
+    setImmediate(async () => {
+      try {
+        const { ensureHumanFriendlyFinanceNumbers } = require('./src/services/debtorPaymentReceiptService');
+        const result = await ensureHumanFriendlyFinanceNumbers();
+        if (result.debtors || result.receipts) {
+          console.log(
+            `[finance-numbers] backfilled debtors=${result.debtors} receipts=${result.receipts}`
+          );
+        }
+      } catch (err) {
+        console.error('[finance-numbers] backfill failed:', err?.message || err);
+      }
+    });
   });
 }
 

@@ -887,6 +887,56 @@ ${bankTableText}`;
   });
 }
 
+/** Guest/admin: payment receipt email (PDF attached separately). */
+function paymentReceiptSent(payload = {}, opts = {}) {
+  const clientName = payload.debtorName || payload.guestName || 'Client';
+  const receiptNumber = payload.receiptNumber || '—';
+  const debtorNumber = payload.debtorNumber || '—';
+  const amount = formatMoney(payload.amount);
+  const paidAt = formatDate(payload.paidAt);
+  const method = String(payload.method || '—').toUpperCase();
+  const customMessage = String(opts.message || '').trim();
+
+  const rows = [
+    detailRow('Receipt', receiptNumber),
+    detailRow('Debtor no.', debtorNumber),
+    detailRow('Paid on', paidAt),
+    detailRow('Method', method),
+    detailMoneyRow('Amount paid', payload.amount),
+    detailMoneyRow('Balance after', payload.remainingAfter),
+  ];
+  if (payload.reference) rows.push(detailRow('Payment reference', payload.reference));
+  if (payload.trackingCode) rows.push(detailRow('Booking ref', payload.trackingCode));
+  if (payload.invoiceNumber) rows.push(detailRow('Invoice', payload.invoiceNumber));
+  const { html: tableHtml, text: tableText } = buildDetailTable(rows);
+
+  const introHtml = customMessage
+    ? `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">${escapeHtml(customMessage).replace(/\n/g, '<br>')}</p>`
+    : `<p style="margin:0 0 18px;font-size:16px;line-height:1.55;color:#243830;">Thank you. Please find your payment receipt attached as a PDF.</p>`;
+  const introText = customMessage || 'Thank you. Please find your payment receipt attached as a PDF.';
+
+  const blocksHtml = `${introHtml}
+<h2 style="margin:28px 0 12px;font-family:Georgia,serif;font-size:20px;font-weight:600;color:#1a2e26;letter-spacing:-0.02em;">Receipt summary</h2>
+${tableHtml}
+<p style="margin:20px 0 0;font-size:14px;line-height:1.55;color:${muted()};">Amount received: <strong>${escapeHtml(amount)}</strong>. Keep this email for your records.</p>`;
+
+  const blocksText = `${introText}
+
+RECEIPT SUMMARY
+${tableText}
+
+Amount received: ${amount}. Keep this email for your records.`;
+
+  return wrapLayout({
+    headline: `Receipt ${receiptNumber}`,
+    preheader: `${amount} · ${receiptNumber}`,
+    lead: `Dear ${clientName},`,
+    blocksHtml,
+    blocksText,
+    logoCid: opts.logoCid || undefined,
+  });
+}
+
 module.exports = {
   bizName,
   resolveMailLogoUrl,
@@ -897,6 +947,7 @@ module.exports = {
   bookingPaymentExpiredGuest,
   bookingPaymentExpiredAdmin,
   quotationSentGuest,
+  paymentReceiptSent,
   buildBankPaymentInstructionsText,
   buildBankPaymentInstructionsHtml,
   buildConfirmationDepositSummaryText,

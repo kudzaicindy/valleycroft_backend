@@ -171,6 +171,8 @@ A PUT with `images: []` is **ignored** so a room-form save does not wipe a galle
 | GET    | `/api/guest-bookings/track`      | Public     | Track by email + code          |
 | GET    | `/api/guest-bookings`            | Admin, CEO | List all guest bookings        |
 | PUT    | `/api/guest-bookings/:id`        | Admin      | Update status/notes            |
+| POST   | `/api/guest-bookings/:id/mark-paid` | Admin, CEO, Finance | Mark booking paid (EFT/cash) |
+| POST   | `/api/guest-bookings/:id/post-revenue` | Admin | Repair revenue posting |
 
 ### Food add-ons (ZAR)
 
@@ -223,7 +225,20 @@ Show `trackingCode` to the guest for tracking; use **`roomName`** in confirmatio
 
 **Body:** `{ status?: 'pending'|'confirmed'|'cancelled', notes? }`
 
-**Response:** `{ success: true, data: <booking> }` — when **`status`** becomes **`confirmed`**, **`debtorId`**, **`roomRevenueTransactionId`**, **`foodRevenueTransactionId`** (when food add-ons), and **`revenueTransactionId`** (room txn alias) are set. Revenue is split: room **`booking`** txn (`BOOK-{trackingCode}`) + food **`catering`** txn (`BOOK-FOOD-{trackingCode}`). One GL journal (DR 1010 total, CR 4001 room + CR 4003 food). If ledger seed is missing, confirm fails with **400** and the status is rolled back.
+**Response:** `{ success: true, data: <booking> }` — when **`status`** becomes **`confirmed`**:
+- Sets **`confirmedAt`**, **`paymentDueAt`** (default **+24 hours**, env `MAIL_PAYMENT_DUE_HOURS_AFTER_CONFIRM`), **`paymentStatus: 'unpaid'`**
+- Creates **`debtorId`**, room/food revenue txns, invoice (same as before)
+- Room stays reserved while **`confirmed` + unpaid** until paid or the hold expires
+
+If unpaid after **`paymentDueAt`**, the booking is auto-**cancelled** (`paymentStatus: 'expired'`) and the room opens again. The guest and admin both receive a **“booking released — payment not received”** email. PayFast settlement or **mark-paid** sets **`paymentStatus: 'paid'`** and keeps the booking.
+
+### POST `/api/guest-bookings/:id/mark-paid` (Admin, CEO, Finance)
+
+Record that the guest paid (EFT/cash/manual). Pays remaining debtor balance by default.
+
+**Body (optional):** `{ amount?, method?: 'manual'|'eft'|'cash'|'payfast', reference?, note?, paidAt? }`
+
+**Response:** `{ success: true, data: <booking>, alreadyPaid?, partial?, payment? }`
 
 ### POST `/api/guest-bookings/:id/post-revenue` (Admin)
 
@@ -412,15 +427,34 @@ Single place for **income statement**, **cash flow**, **balance sheet**, and **g
 | Method | Endpoint             | Access           |
 |--------|----------------------|------------------|
 | GET    | `/api/debtors`       | Finance, Admin, CEO |
+| GET    | `/api/debtors/pending-bookings` | Finance, Admin, CEO |
+| GET    | `/api/debtors/:id/payments` | Finance, Admin, CEO |
+| GET    | `/api/debtors/:id/payments/:paymentId/pdf` | Finance, Admin, CEO |
+| POST   | `/api/debtors/:id/payments/:paymentId/send-email` | Finance, Admin |
+| POST   | `/api/debtors/:id/payments` | Finance, Admin |
 | POST   | `/api/debtors`       | Finance, Admin   |
 | PUT    | `/api/debtors/:id`   | Finance, Admin   |
 | DELETE | `/api/debtors/:id`   | Finance, Admin   |
+
+Same routes under **`/api/finance/debtors`**.
+
+**Debtor number:** each debtor gets a simple code **`DBT-YYYY-####`** (e.g. `DBT-2026-0001`) — not a Mongo id. Shown as `debtorNumber` on list/create responses.
 
 **Query (GET):** `?page=1&limit=20`
 
 **POST body:** `{ name, contactEmail?, contactPhone?, description?, amountOwed, amountPaid?, dueDate?, status?, bookingRef?, invoiceRef?, notes? }`
 
 **PUT** partial update. Debtor has virtual `balance` (amountOwed - amountPaid) in response.
+
+### Payments & receipts
+
+**POST `/api/debtors/:id/payments`** body: `{ amount, method?, reference?, note?, paidAt? }`  
+Response includes `related.payment.receiptNumber` (`RCP-YYYY-####`) and helper paths for PDF / email.
+
+**GET `/api/debtors/:id/payments/:paymentId/pdf`** — download receipt PDF.
+
+**POST `/api/debtors/:id/payments/:paymentId/send-email`**  
+Body (optional): `{ to?, subject?, message? }` — defaults to debtor `contactEmail`. Attaches the receipt PDF.
 
 ---
 
