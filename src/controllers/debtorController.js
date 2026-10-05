@@ -2,7 +2,7 @@ const Debtor = require('../models/Debtor');
 const DebtorPayment = require('../models/DebtorPayment');
 const { asyncHandler, getPagination } = require('../utils/helpers');
 const logAudit = require('../utils/audit');
-const { recordDebtorPayment } = require('../services/debtorPaymentService');
+const { recordDebtorPayment, deleteDebtorPayment } = require('../services/debtorPaymentService');
 const { withRoomPreview } = require('../utils/bookingPreview');
 const invoiceNotify = require('../services/invoiceNotifyService');
 const mailTemplates = require('../services/mailTemplates');
@@ -208,6 +208,40 @@ const recordPayment = asyncHandler(async (req, res) => {
   });
 });
 
+const deletePayment = asyncHandler(async (req, res) => {
+  try {
+    const result = await deleteDebtorPayment(req.params.id, req.params.paymentId, {
+      userId: req.user._id,
+      reason: req.body?.reason,
+    });
+    await logAudit({
+      userId: req.user._id,
+      role: req.user.role,
+      action: 'delete',
+      entity: 'DebtorPayment',
+      entityId: req.params.paymentId,
+      before: result.deletedPayment,
+      after: {
+        debtorId: result.debtor._id,
+        debtorNumber: result.debtor.debtorNumber,
+        amountPaid: result.debtor.amountPaid,
+        status: result.debtor.status,
+      },
+      req,
+    });
+    return res.json({
+      success: true,
+      message: 'Payment deleted',
+      data: result.debtor,
+      related: { deletedPayment: result.deletedPayment },
+      meta: result.meta,
+    });
+  } catch (err) {
+    const status = err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message || 'Could not delete payment' });
+  }
+});
+
 const getPaymentPdf = asyncHandler(async (req, res) => {
   try {
     const ctx = await loadPaymentReceiptContext(req.params.id, req.params.paymentId);
@@ -374,6 +408,7 @@ module.exports = {
   pendingBookings,
   listPayments,
   recordPayment,
+  deletePayment,
   getPaymentPdf,
   sendPaymentReceiptEmail,
   create,

@@ -167,7 +167,85 @@ async function recordDebtorPayment(debtorId, opts) {
   };
 }
 
+/**
+ * Delete a recorded debtor payment: reverse GL, remove finance transaction, restore balance.
+ */
+async function deleteDebtorPayment(debtorId, paymentId, opts = {}) {
+  const debtor = await Debtor.findById(debtorId);
+  if (!debtor) {
+    const err = new Error('Debtor not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const payment = await DebtorPayment.findOne({ _id: paymentId, debtorId: debtor._id });
+  if (!payment) {
+    const err = new Error('Payment not found');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const actorId = await resolvePaymentActorUserId(opts.userId);
+  const amount = Number(payment.amount) || 0;
+  const beforePaid = Number(debtor.amountPaid) || 0;
+  const afterPaid = Math.max(0, beforePaid - amount);
+  const before = debtor.toObject();
+
+  if (payment.financialJournalEntryId) {
+    try {
+      await financialGlPostingService.postReversalThenVoidFinancialJournalV3(
+        payment.financialJournalEntryId,
+        actorId,
+        {
+          voidReason: opts.reason || `Payment deleted (${payment.receiptNumber || payment._id})`,
+          description: `Reverse booking payment — ${debtor.name || 'Debtor'}`,
+        }
+      );
+    } catch (err) {
+      // Fall back to void-only if reversal fails (legacy journals)
+      await financialGlPostingService.voidFinancialJournalEntry(
+        payment.financialJournalEntryId,
+        actorId,
+        opts.reason || `Payment deleted (${payment.receiptNumber || payment._id})`
+      );
+    }
+  }
+
+  if (payment.transactionId) {
+    await Transaction.findByIdAndDelete(payment.transactionId);
+  }
+
+  await payment.deleteOne();
+
+  debtor.amountPaid = afterPaid;
+  debtor.status = debtorStatusFor(Number(debtor.amountOwed) || 0, afterPaid);
+  const noteLine = `[payment deleted ${new Date().toISOString()}] ${payment.receiptNumber || payment._id} · R ${amount.toFixed(2)}${opts.reason ? ` — ${opts.reason}` : ''}`;
+  debtor.notes = debtor.notes ? `${debtor.notes}\n${noteLine}` : noteLine;
+  await debtor.save();
+
+  try {
+    const { syncGuestBookingUnpaidFromDebtor } = require('./guestBookingPaymentService');
+    await syncGuestBookingUnpaidFromDebtor(debtor);
+  } catch (err) {
+    console.error('[debtor-payment] guest booking unpaid sync failed:', err?.message || err);
+  }
+
+  return {
+    debtor,
+    deletedPayment: {
+      _id: paymentId,
+      receiptNumber: payment.receiptNumber,
+      amount,
+    },
+    before,
+    meta: {
+      remaining: Math.max(0, (Number(debtor.amountOwed) || 0) - (Number(debtor.amountPaid) || 0)),
+    },
+  };
+}
+
 module.exports = {
   recordDebtorPayment,
+  deleteDebtorPayment,
   debtorStatusFor,
 };

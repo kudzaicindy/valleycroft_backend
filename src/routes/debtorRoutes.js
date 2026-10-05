@@ -14,6 +14,7 @@ router.post(
   authorize('finance', 'admin'),
   debtorController.sendPaymentReceiptEmail
 );
+router.delete('/:id/payments/:paymentId', authorize('finance', 'admin'), debtorController.deletePayment);
 router.post('/:id/payments', authorize('finance', 'admin'), debtorController.recordPayment);
 router.post('/', authorize('finance', 'admin'), debtorController.create);
 router.put('/:id', authorize('finance', 'admin'), debtorController.update);

@@ -58,6 +58,30 @@ async function syncGuestBookingPaidFromDebtor(debtorDoc, paidAt = new Date()) {
 }
 
 /**
+ * When a payment is deleted and the debtor is no longer fully settled, clear paid status
+ * on the linked confirmed guest booking (hold resumes / unpaid again).
+ */
+async function syncGuestBookingUnpaidFromDebtor(debtorDoc) {
+  const guestBookingId = debtorDoc?.guestBookingRef;
+  if (!guestBookingId) return null;
+
+  const owed = Number(debtorDoc.amountOwed) || 0;
+  const paid = Number(debtorDoc.amountPaid) || 0;
+  const fullyPaid = owed <= 0 || paid + 0.009 >= owed;
+  if (fullyPaid) return null;
+
+  const booking = await GuestBooking.findById(guestBookingId);
+  if (!booking) return null;
+  if (booking.status === 'cancelled') return null;
+  if (booking.paymentStatus !== 'paid') return booking;
+
+  booking.paymentStatus = 'unpaid';
+  booking.paidAt = undefined;
+  await booking.save();
+  return booking;
+}
+
+/**
  * Admin (or system) marks a confirmed booking as paid — records remaining debtor balance if any.
  */
 async function markGuestBookingPaid(bookingId, opts = {}) {
@@ -219,5 +243,6 @@ module.exports = {
   applyPaymentHoldOnConfirm,
   markGuestBookingPaid,
   syncGuestBookingPaidFromDebtor,
+  syncGuestBookingUnpaidFromDebtor,
   expireUnpaidGuestBookings,
 };
