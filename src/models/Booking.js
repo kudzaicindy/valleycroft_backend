@@ -32,6 +32,13 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'confirmed', 'checked-in', 'checked-out', 'cancelled'],
     default: 'pending',
   },
+  /** unpaid until staff record payment; paid keeps the stay settled. */
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'paid'],
+    default: 'unpaid',
+  },
+  paidAt: Date,
   notes: String,
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   revenueTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },

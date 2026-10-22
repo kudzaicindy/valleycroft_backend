@@ -534,6 +534,9 @@ async function onInternalBookingConfirmed(b, userId) {
   b.debtorId = debtor._id;
   b.revenueTransactionId = tx._id;
   b.invoiceId = invoice._id;
+  const settled = total > 0 && deposit + 0.009 >= total;
+  b.paymentStatus = settled ? 'paid' : 'unpaid';
+  b.paidAt = settled ? new Date() : undefined;
   await b.save();
 
   // Internal bookings: no guest email/WhatsApp (admin alert only, on create via scheduleInternalBookingCreatedAdmin).

@@ -7,6 +7,7 @@ const {
   create,
   update,
   remove,
+  markPaid,
 } = require('../controllers/bookingController');
 
 const router = express.Router();
@@ -18,6 +19,7 @@ router.get('/availability', authorize('admin', 'ceo', 'finance'), getAvailabilit
 router.get('/:id', authorize('admin', 'ceo', 'finance'), getOne);
 router.post('/', authorize('admin'), create);
 router.put('/:id', authorize('admin'), update);
+router.post('/:id/mark-paid', authorize('admin', 'finance'), markPaid);
 router.delete('/:id', authorize('admin'), remove);
 
 module.exports = router;

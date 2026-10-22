@@ -14,6 +14,38 @@ function debtorStatusFor(owed, paid) {
   return 'partial';
 }
 
+async function syncInternalBookingPaidFromDebtor(debtorDoc, paidAt = new Date()) {
+  const bookingId = debtorDoc?.bookingRef;
+  if (!bookingId) return null;
+  const owed = Number(debtorDoc.amountOwed) || 0;
+  const paid = Number(debtorDoc.amountPaid) || 0;
+  if (owed > 0 && paid + 0.009 < owed) return null;
+  const Booking = require('../models/Booking');
+  const booking = await Booking.findById(bookingId);
+  if (!booking || booking.status === 'cancelled') return null;
+  if (booking.paymentStatus === 'paid') return booking;
+  booking.paymentStatus = 'paid';
+  booking.paidAt = paidAt instanceof Date ? paidAt : new Date(paidAt);
+  await booking.save();
+  return booking;
+}
+
+async function syncInternalBookingUnpaidFromDebtor(debtorDoc) {
+  const bookingId = debtorDoc?.bookingRef;
+  if (!bookingId) return null;
+  const owed = Number(debtorDoc.amountOwed) || 0;
+  const paid = Number(debtorDoc.amountPaid) || 0;
+  if (owed <= 0 || paid + 0.009 >= owed) return null;
+  const Booking = require('../models/Booking');
+  const booking = await Booking.findById(bookingId);
+  if (!booking || booking.status === 'cancelled') return null;
+  if (booking.paymentStatus !== 'paid') return booking;
+  booking.paymentStatus = 'unpaid';
+  booking.paidAt = undefined;
+  await booking.save();
+  return booking;
+}
+
 async function resolvePaymentActorUserId(preferredUserId) {
   if (preferredUserId) return preferredUserId;
   const admin = await User.findOne({ role: { $in: ['admin', 'finance'] } }).select('_id').lean();
@@ -155,6 +187,12 @@ async function recordDebtorPayment(debtorId, opts) {
     console.error('[debtor-payment] guest booking paid sync failed:', err?.message || err);
   }
 
+  try {
+    await syncInternalBookingPaidFromDebtor(debtor, paidAt);
+  } catch (err) {
+    console.error('[debtor-payment] internal booking paid sync failed:', err?.message || err);
+  }
+
   return {
     debtor,
     payment,
@@ -228,6 +266,12 @@ async function deleteDebtorPayment(debtorId, paymentId, opts = {}) {
     await syncGuestBookingUnpaidFromDebtor(debtor);
   } catch (err) {
     console.error('[debtor-payment] guest booking unpaid sync failed:', err?.message || err);
+  }
+
+  try {
+    await syncInternalBookingUnpaidFromDebtor(debtor);
+  } catch (err) {
+    console.error('[debtor-payment] internal booking unpaid sync failed:', err?.message || err);
   }
 
   return {

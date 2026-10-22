@@ -241,4 +241,62 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Booking removed' });
 });
 
-module.exports = { list, getAvailability, getOne, create, update, remove };
+const markPaid = asyncHandler(async (req, res) => {
+  const booking = await Booking.findById(req.params.id);
+  if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+  const status = String(booking.status || '').toLowerCase();
+  if (!['confirmed', 'checked-in', 'checked-out'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'Only confirmed bookings can be marked as paid' });
+  }
+  if (booking.paymentStatus === 'paid') {
+    const existing = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
+    return res.json({ success: true, data: withRoomPreview(existing), alreadyPaid: true });
+  }
+
+  const { recordDebtorPayment } = require('../services/debtorPaymentService');
+  const Debtor = require('../models/Debtor');
+  const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
+
+  if (booking.debtorId) {
+    const debtor = await Debtor.findById(booking.debtorId);
+    if (debtor) {
+      const remaining = Math.max(0, (Number(debtor.amountOwed) || 0) - (Number(debtor.amountPaid) || 0));
+      const amount =
+        req.body?.amount != null && Number.isFinite(Number(req.body.amount))
+          ? Number(req.body.amount)
+          : remaining;
+      if (amount > 0.009) {
+        await recordDebtorPayment(debtor._id, {
+          amount,
+          paidAt,
+          method: req.body?.method || 'manual',
+          reference: req.body?.reference || `ADMIN-PAID-${String(booking._id).slice(-6)}`,
+          note: req.body?.note || 'Marked paid by admin',
+          createdBy: req.user._id,
+        });
+      }
+    }
+  }
+
+  const fresh = await Booking.findById(booking._id);
+  if (fresh && fresh.paymentStatus !== 'paid') {
+    fresh.paymentStatus = 'paid';
+    fresh.paidAt = paidAt;
+    await fresh.save();
+  }
+
+  await logAudit({
+    userId: req.user._id,
+    role: req.user.role,
+    action: 'update',
+    entity: 'Booking',
+    entityId: booking._id,
+    after: { paymentStatus: 'paid', paidAt },
+    req,
+  });
+
+  const updated = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
+  return res.json({ success: true, data: withRoomPreview(updated) });
+});
+
+module.exports = { list, getAvailability, getOne, create, update, remove, markPaid };
