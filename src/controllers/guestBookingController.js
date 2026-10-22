@@ -487,30 +487,40 @@ const markGuestBookingPaid = asyncHandler(async (req, res) => {
       note: req.body.note,
       paidAt: req.body.paidAt,
     });
+    const updated = await GuestBooking.findById(result.booking._id).populate('roomId', 'name type').lean();
+    const receiptNumber = result.payment?.payment?.receiptNumber;
     await logAudit({
       userId: req.user._id,
       role: req.user.role,
       action: 'update',
       entity: 'GuestBooking',
       entityId: result.booking._id,
-      after: { paymentStatus: 'paid', paidAt: result.booking.paidAt },
+      after: {
+        paymentStatus: updated?.paymentStatus || result.booking.paymentStatus,
+        paidAt: updated?.paidAt || result.booking.paidAt,
+        receiptNumber,
+        partial: Boolean(result.partial),
+      },
       req,
     });
-    const updated = await GuestBooking.findById(result.booking._id).populate('roomId', 'name type').lean();
     return res.json({
       success: true,
       data: withRoomPreview(updated),
       alreadyPaid: Boolean(result.alreadyPaid),
       partial: Boolean(result.partial),
-      payment: result.payment
-        ? {
-            debtorPaymentId: result.payment.payment?._id,
-            remaining: result.payment.meta?.remaining,
-          }
-        : undefined,
-      message: result.partial
-        ? 'Partial payment recorded; booking stays unpaid until the balance is cleared'
-        : undefined,
+      meta: {
+        partial: Boolean(result.partial),
+        remaining: result.remaining,
+        receiptNumber,
+        depositReceiptNumber: result.backfill?.payment?.receiptNumber,
+        amount: result.payment?.payment?.amount,
+        alreadyPaid: Boolean(result.alreadyPaid),
+      },
+      message: result.alreadyPaid
+        ? 'This booking is already paid.'
+        : result.partial
+          ? 'Payment recorded. The booking stays unpaid until the balance is cleared.'
+          : 'Payment recorded and booking marked as paid.',
     });
   } catch (err) {
     const status = err.statusCode || 400;

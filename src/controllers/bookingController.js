@@ -253,50 +253,54 @@ const markPaid = asyncHandler(async (req, res) => {
     return res.json({ success: true, data: withRoomPreview(existing), alreadyPaid: true });
   }
 
-  const { recordDebtorPayment } = require('../services/debtorPaymentService');
-  const Debtor = require('../models/Debtor');
-  const paidAt = req.body?.paidAt ? new Date(req.body.paidAt) : new Date();
-
-  if (booking.debtorId) {
-    const debtor = await Debtor.findById(booking.debtorId);
-    if (debtor) {
-      const remaining = Math.max(0, (Number(debtor.amountOwed) || 0) - (Number(debtor.amountPaid) || 0));
-      const amount =
-        req.body?.amount != null && Number.isFinite(Number(req.body.amount))
-          ? Number(req.body.amount)
-          : remaining;
-      if (amount > 0.009) {
-        await recordDebtorPayment(debtor._id, {
-          amount,
-          paidAt,
-          method: req.body?.method || 'manual',
-          reference: req.body?.reference || `ADMIN-PAID-${String(booking._id).slice(-6)}`,
-          note: req.body?.note || 'Marked paid by admin',
-          createdBy: req.user._id,
-        });
-      }
-    }
+  const { recordMarkPaid } = require('../services/debtorPaymentService');
+  let result;
+  try {
+    result = await recordMarkPaid(booking, 'internal', {
+      amount: req.body?.amount,
+      paidAt: req.body?.paidAt,
+      method: req.body?.method,
+      reference: req.body?.reference,
+      note: req.body?.note,
+      createdBy: req.user._id,
+    });
+  } catch (err) {
+    const status = err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message || 'Could not mark booking as paid' });
   }
 
   const fresh = await Booking.findById(booking._id);
-  if (fresh && fresh.paymentStatus !== 'paid') {
-    fresh.paymentStatus = 'paid';
-    fresh.paidAt = paidAt;
-    await fresh.save();
-  }
-
   await logAudit({
     userId: req.user._id,
     role: req.user.role,
     action: 'update',
     entity: 'Booking',
     entityId: booking._id,
-    after: { paymentStatus: 'paid', paidAt },
+    after: {
+      paymentStatus: fresh?.paymentStatus,
+      paidAt: fresh?.paidAt,
+      receiptNumber: result.payment?.payment?.receiptNumber,
+    },
     req,
   });
 
   const updated = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
-  return res.json({ success: true, data: withRoomPreview(updated) });
+  const receiptNumber = result.payment?.payment?.receiptNumber;
+  return res.json({
+    success: true,
+    data: withRoomPreview(updated),
+    partial: Boolean(result.partial),
+    meta: {
+      partial: Boolean(result.partial),
+      remaining: result.remaining,
+      receiptNumber,
+      depositReceiptNumber: result.backfill?.payment?.receiptNumber,
+      amount: result.payment?.payment?.amount,
+    },
+    message: result.partial
+      ? 'Payment recorded. The booking stays unpaid until the balance is cleared.'
+      : 'Payment recorded and booking marked as paid.',
+  });
 });
 
 module.exports = { list, getAvailability, getOne, create, update, remove, markPaid };

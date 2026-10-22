@@ -5,7 +5,7 @@
 const GuestBooking = require('../models/GuestBooking');
 const Debtor = require('../models/Debtor');
 const bookingRevenueService = require('./bookingRevenueService');
-const { recordDebtorPayment } = require('./debtorPaymentService');
+const { recordMarkPaid } = require('./debtorPaymentService');
 const User = require('../models/User');
 
 function paymentDueHoursAfterConfirm() {
@@ -82,7 +82,8 @@ async function syncGuestBookingUnpaidFromDebtor(debtorDoc) {
 }
 
 /**
- * Admin (or system) marks a confirmed booking as paid — records remaining debtor balance if any.
+ * Admin marks a confirmed booking as paid.
+ * Requires the amount received and always creates a payment receipt.
  */
 async function markGuestBookingPaid(bookingId, opts = {}) {
   const booking = await GuestBooking.findById(bookingId);
@@ -101,70 +102,22 @@ async function markGuestBookingPaid(bookingId, opts = {}) {
   }
 
   const userId = await resolveSystemUserId(opts.userId);
-  const paidAt = opts.paidAt ? new Date(opts.paidAt) : new Date();
-  let paymentResult = null;
-
-  if (booking.debtorId) {
-    const debtor = await Debtor.findById(booking.debtorId);
-    if (debtor) {
-      const remaining = Math.max(0, (Number(debtor.amountOwed) || 0) - (Number(debtor.amountPaid) || 0));
-      const amount =
-        opts.amount != null && Number.isFinite(Number(opts.amount))
-          ? Number(opts.amount)
-          : remaining;
-      if (amount > 0.009) {
-        paymentResult = await recordDebtorPayment(debtor._id, {
-          amount,
-          paidAt,
-          method: opts.method || 'manual',
-          reference: opts.reference || `ADMIN-PAID-${booking.trackingCode}`,
-          note: opts.note || 'Marked paid by admin',
-          createdBy: userId,
-        });
-      } else {
-        booking.paymentStatus = 'paid';
-        booking.paidAt = paidAt;
-        await booking.save();
-      }
-    } else {
-      booking.paymentStatus = 'paid';
-      booking.paidAt = paidAt;
-      await booking.save();
-    }
-  } else {
-    booking.paymentStatus = 'paid';
-    booking.paidAt = paidAt;
-    await booking.save();
-  }
-
+  const result = await recordMarkPaid(booking, 'guest', {
+    amount: opts.amount,
+    paidAt: opts.paidAt,
+    method: opts.method,
+    reference: opts.reference,
+    note: opts.note,
+    createdBy: userId,
+  });
   const fresh = await GuestBooking.findById(booking._id);
-  if (fresh && fresh.paymentStatus !== 'paid') {
-    let remaining = 0;
-    if (fresh.debtorId) {
-      const debtor = await Debtor.findById(fresh.debtorId).lean();
-      remaining = Math.max(
-        0,
-        (Number(debtor?.amountOwed) || 0) - (Number(debtor?.amountPaid) || 0)
-      );
-    }
-    if (remaining <= 0.009) {
-      fresh.paymentStatus = 'paid';
-      fresh.paidAt = paidAt;
-      await fresh.save();
-    } else {
-      return {
-        booking: fresh,
-        alreadyPaid: false,
-        partial: true,
-        payment: paymentResult,
-      };
-    }
-  }
-
   return {
     booking: fresh || booking,
     alreadyPaid: false,
-    payment: paymentResult,
+    partial: result.partial,
+    remaining: result.remaining,
+    payment: result.payment,
+    backfill: result.backfill,
   };
 }
 
