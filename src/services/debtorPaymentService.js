@@ -288,6 +288,27 @@ async function deleteDebtorPayment(debtorId, paymentId, opts = {}) {
   };
 }
 
+async function flagBookingsWithPaymentRecords(bookings, kind) {
+  const rows = Array.isArray(bookings) ? bookings : [];
+  if (!rows.length) return rows;
+  const ids = rows.map((b) => b?._id).filter(Boolean);
+  const debtorIds = rows.map((b) => b?.debtorId).filter(Boolean);
+  const field = kind === 'guest' ? 'guestBookingRef' : 'bookingRef';
+  const or = [];
+  if (ids.length) or.push({ [field]: { $in: ids } });
+  if (debtorIds.length) or.push({ debtorId: { $in: debtorIds } });
+  const found = or.length
+    ? await DebtorPayment.find({ $or: or }).select(`${field} debtorId`).lean()
+    : [];
+  const byBooking = new Set(found.map((p) => (p[field] ? String(p[field]) : '')).filter(Boolean));
+  const byDebtor = new Set(found.map((p) => (p.debtorId ? String(p.debtorId) : '')).filter(Boolean));
+  return rows.map((b) => ({
+    ...b,
+    hasPaymentRecord:
+      byBooking.has(String(b._id)) || Boolean(b.debtorId && byDebtor.has(String(b.debtorId))),
+  }));
+}
+
 function roundMoney(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
@@ -468,4 +489,5 @@ module.exports = {
   deleteDebtorPayment,
   debtorStatusFor,
   recordMarkPaid,
+  flagBookingsWithPaymentRecords,
 };

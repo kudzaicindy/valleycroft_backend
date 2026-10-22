@@ -377,9 +377,11 @@ const getAllGuestBookings = asyncHandler(async (req, res) => {
       .lean(),
     GuestBooking.countDocuments(),
   ]);
+  const { flagBookingsWithPaymentRecords } = require('../services/debtorPaymentService');
+  const rows = await flagBookingsWithPaymentRecords(withRoomPreviewMany(data), 'guest');
   res.json({
     success: true,
-    data: withRoomPreviewMany(data),
+    data: rows,
     meta: { page: parseInt(page, 10), limit: lim, total },
   });
 });
@@ -488,6 +490,8 @@ const markGuestBookingPaid = asyncHandler(async (req, res) => {
       paidAt: req.body.paidAt,
     });
     const updated = await GuestBooking.findById(result.booking._id).populate('roomId', 'name type').lean();
+    const { flagBookingsWithPaymentRecords } = require('../services/debtorPaymentService');
+    const [row] = await flagBookingsWithPaymentRecords([withRoomPreview(updated)], 'guest');
     const receiptNumber = result.payment?.payment?.receiptNumber;
     await logAudit({
       userId: req.user._id,
@@ -505,7 +509,7 @@ const markGuestBookingPaid = asyncHandler(async (req, res) => {
     });
     return res.json({
       success: true,
-      data: withRoomPreview(updated),
+      data: row,
       alreadyPaid: Boolean(result.alreadyPaid),
       partial: Boolean(result.partial),
       meta: {

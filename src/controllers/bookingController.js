@@ -104,9 +104,11 @@ const list = asyncHandler(async (req, res) => {
       .lean(),
     Booking.countDocuments(),
   ]);
+  const { flagBookingsWithPaymentRecords } = require('../services/debtorPaymentService');
+  const rows = await flagBookingsWithPaymentRecords(withRoomPreviewMany(data), 'internal');
   res.json({
     success: true,
-    data: withRoomPreviewMany(data),
+    data: rows,
     meta: { page: parseInt(page, 10), limit: lim, total },
   });
 });
@@ -132,7 +134,9 @@ const getAvailability = asyncHandler(async (req, res) => {
 const getOne = asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id).populate('roomId', 'name type').lean();
   if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
-  res.json({ success: true, data: withRoomPreview(booking) });
+  const { flagBookingsWithPaymentRecords } = require('../services/debtorPaymentService');
+  const [row] = await flagBookingsWithPaymentRecords([withRoomPreview(booking)], 'internal');
+  res.json({ success: true, data: row });
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -281,10 +285,12 @@ const markPaid = asyncHandler(async (req, res) => {
   });
 
   const updated = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
+  const { flagBookingsWithPaymentRecords } = require('../services/debtorPaymentService');
+  const [row] = await flagBookingsWithPaymentRecords([withRoomPreview(updated)], 'internal');
   const receiptNumber = result.payment?.payment?.receiptNumber;
   return res.json({
     success: true,
-    data: withRoomPreview(updated),
+    data: row,
     partial: Boolean(result.partial),
     meta: {
       partial: Boolean(result.partial),
