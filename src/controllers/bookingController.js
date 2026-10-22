@@ -248,10 +248,6 @@ const markPaid = asyncHandler(async (req, res) => {
   if (!['confirmed', 'checked-in', 'checked-out'].includes(status)) {
     return res.status(400).json({ success: false, message: 'Only confirmed bookings can be marked as paid' });
   }
-  if (booking.paymentStatus === 'paid') {
-    const existing = await Booking.findById(booking._id).populate('roomId', 'name type').lean();
-    return res.json({ success: true, data: withRoomPreview(existing), alreadyPaid: true });
-  }
 
   const { recordMarkPaid } = require('../services/debtorPaymentService');
   let result;

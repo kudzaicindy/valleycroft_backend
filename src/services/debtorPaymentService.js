@@ -449,6 +449,11 @@ async function recordMarkPaid(booking, kind, opts = {}) {
   }
 
   const recorded = paymentResult || backfill;
+  if (!recorded) {
+    const err = new Error('This booking already has a payment record for the full amount. Open Finance and check Payment history.');
+    err.statusCode = 400;
+    throw err;
+  }
   return {
     payment: recorded,
     backfill: backfill && paymentResult ? backfill : null,

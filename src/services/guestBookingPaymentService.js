@@ -97,9 +97,6 @@ async function markGuestBookingPaid(bookingId, opts = {}) {
     err.statusCode = 400;
     throw err;
   }
-  if (booking.paymentStatus === 'paid') {
-    return { booking, alreadyPaid: true };
-  }
 
   const userId = await resolveSystemUserId(opts.userId);
   const result = await recordMarkPaid(booking, 'guest', {
