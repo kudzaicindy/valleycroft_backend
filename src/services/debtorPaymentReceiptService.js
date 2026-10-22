@@ -7,7 +7,6 @@ const path = require('path');
 const Debtor = require('../models/Debtor');
 const DebtorPayment = require('../models/DebtorPayment');
 const Counter = require('../models/Counter');
-const mailTemplates = require('./mailTemplates');
 
 const MAIL_LOGO_PATH = path.join(__dirname, '../assets/mail-logo.png');
 const FRONTEND_LOGO_CANDIDATES = [
@@ -201,20 +200,6 @@ function buildReceiptPdfBuffer({ payment, debtor }) {
       });
       doc.moveDown(0.6);
     }
-
-    const bank = mailTemplates.bookingBankDetails();
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(brand).text('BANKING DETAILS', left, doc.y, {
-      characterSpacing: 0.4,
-    });
-    doc.moveDown(0.35);
-    const bankTop = doc.y;
-    const bankH = 72;
-    drawPanel(left, bankTop, contentWidth, bankH);
-    kv(left + 10, bankTop + 12, 'Bank', bank.bankName, col);
-    kv(left + 10 + col + 10, bankTop + 12, 'Branch code', bank.branchCode, col);
-    kv(left + 10, bankTop + 42, 'Account number', bank.accountNumber, col);
-    kv(left + 10 + col + 10, bankTop + 42, 'Account name', bank.accountName, col);
-    doc.y = bankTop + bankH + 14;
 
     doc.strokeColor(line).lineWidth(0.7).moveTo(left, doc.y).lineTo(right, doc.y).stroke();
     doc.font('Helvetica').fontSize(7.5).fillColor(muted).text(
