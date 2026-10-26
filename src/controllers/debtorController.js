@@ -386,6 +386,47 @@ const update = asyncHandler(async (req, res) => {
   res.json({ success: true, data: debtor });
 });
 
+const removeOutstanding = asyncHandler(async (req, res) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (reason.length < 3) {
+    return res.status(400).json({ success: false, message: 'Enter a reason for removing this outstanding balance' });
+  }
+  const debtor = await Debtor.findById(req.params.id);
+  if (!debtor) return res.status(404).json({ success: false, message: 'Debtor not found' });
+
+  const owed = Number(debtor.amountOwed) || 0;
+  const paid = Number(debtor.amountPaid) || 0;
+  const remaining = Math.max(0, owed - paid);
+  if (remaining <= 0.009 || !['outstanding', 'partial'].includes(String(debtor.status || ''))) {
+    return res.status(400).json({ success: false, message: 'This booking has no outstanding balance to remove' });
+  }
+
+  const before = debtor.toObject();
+  const line = `[removed from outstanding ${new Date().toISOString()}] ${reason}`;
+  debtor.notes = debtor.notes ? `${debtor.notes}\n${line}` : line;
+  debtor.amountOwed = paid;
+  debtor.status = paid > 0.009 ? 'paid' : 'written-off';
+  await debtor.save();
+
+  await logAudit({
+    userId: req.user._id,
+    role: req.user.role,
+    action: 'delete',
+    entity: 'Debtor',
+    entityId: debtor._id,
+    before,
+    after: { ...debtor.toObject(), removalReason: reason },
+    req,
+  });
+
+  res.json({
+    success: true,
+    message: 'Outstanding balance removed',
+    data: debtor,
+    meta: { reason, removedBalance: remaining },
+  });
+});
+
 const remove = asyncHandler(async (req, res) => {
   const debtor = await Debtor.findById(req.params.id);
   if (!debtor) return res.status(404).json({ success: false, message: 'Debtor not found' });
@@ -413,5 +454,6 @@ module.exports = {
   sendPaymentReceiptEmail,
   create,
   update,
+  removeOutstanding,
   remove,
 };
